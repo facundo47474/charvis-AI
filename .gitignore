@@ -9,8 +9,7 @@ node_modules/
 # Logs y temporales
 *.log
 npm-debug.log*
-charvis_tmp.webm
-charvis_tmp.wav
+tmp_*.webm
 
 # OS
 Thumbs.db
@@ -21,8 +20,7 @@ Desktop.ini
 .idea/
 .vscode/
 *.swp
+.gemini/
 
-# Build / Electron
-out/
-dist/
-release/
+# Vercel
+.vercel/
