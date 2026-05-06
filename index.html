@@ -2,555 +2,522 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8"/>
-  <title>Charvis</title>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;600;700&family=Syncopate:wght@600;700&display=swap" rel="stylesheet"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CHARVIS</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
   <style>
-    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    :root{
-      --bg-deep:#050508;--bg-mid:#0c0c14;--surface:rgba(18,18,28,.55);--glass:rgba(255,255,255,.04);
-      --border:rgba(124,106,255,.22);--accent:#8b7cff;--accent-glow:rgba(139,124,255,.45);--accent2:#ff5c9d;--accent2-glow:rgba(255,92,157,.4);
-      --cyan:#3ee8ff;--cyan-dim:rgba(62,232,255,.25);--mint:#5dffc4;--mint-dim:rgba(93,255,196,.2);
-      --text:#eef0ff;--muted:rgba(200,205,230,.55);--user-bg:linear-gradient(145deg,rgba(139,124,255,.18),rgba(80,60,180,.12));
-      --charvis-bg:linear-gradient(145deg,rgba(255,92,157,.08),rgba(62,232,255,.06));--danger:#ff5c7a;
-      --radius-bubble:22px;--radius-soft:28px;
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg      : #080810;
+      --surface : #0e0e1a;
+      --border  : #1a1a2e;
+      --accent  : #6c5ce7;
+      --accent2 : #fd79a8;
+      --cyan    : #00cec9;
+      --text    : #dfe6e9;
+      --muted   : #636e72;
+      --success : #55efc4;
+      --danger  : #ff7675;
+      --user-bg : #13132a;
+      --bot-bg  : #0e0e18;
     }
-    html,body{height:100%;color:var(--text);font-family:'Outfit',system-ui,sans-serif;overflow:hidden;user-select:none;-webkit-font-smoothing:antialiased}
-    body{
-      background:var(--bg-deep);
-      position:relative;
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      overflow: hidden;
     }
-    body::before{
-      content:"";position:fixed;inset:0;pointer-events:none;
+
+    /* ── Fondo animado ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
       background:
-        radial-gradient(ellipse 120% 80% at 50% -20%,rgba(139,124,255,.18),transparent 55%),
-        radial-gradient(ellipse 90% 60% at 100% 50%,rgba(255,92,157,.08),transparent 45%),
-        radial-gradient(ellipse 70% 50% at 0% 80%,rgba(62,232,255,.06),transparent 40%);
-      z-index:0;
-    }
-    body::after{
-      content:"";position:fixed;inset:0;pointer-events:none;opacity:.35;z-index:0;
-      background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
-      mix-blend-mode:overlay;
-    }
-    .ambient-grid{
-      position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.12;
-      background-image:
-        linear-gradient(rgba(139,124,255,.15) 1px,transparent 1px),
-        linear-gradient(90deg,rgba(139,124,255,.15) 1px,transparent 1px);
-      background-size:48px 48px;
-      mask-image:radial-gradient(ellipse 70% 60% at 50% 40%,black,transparent);
-    }
-    .shell{position:relative;z-index:1;display:flex;flex-direction:column;height:100vh;}
-
-    #titlebar{
-      -webkit-app-region:drag;
-      display:flex;align-items:center;justify-content:space-between;
-      padding:16px 22px 12px;
-      border-bottom:1px solid var(--glass);
-      background:linear-gradient(180deg,rgba(12,12,20,.85),transparent);
-      backdrop-filter:blur(12px);
-    }
-    #titlebar .logo{
-      font-family:'Syncopate',sans-serif;font-weight:700;font-size:13px;letter-spacing:.35em;
-      background:linear-gradient(115deg,var(--accent),var(--cyan),var(--accent2));
-      background-size:200% auto;
-      -webkit-background-clip:text;-webkit-text-fill-color:transparent;
-      animation:logoShift 8s ease infinite;
-    }
-    @keyframes logoShift{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
-    #titlebar .controls{-webkit-app-region:no-drag;display:flex;gap:10px}
-    .ctrl-btn{
-      width:32px;height:32px;border-radius:50%;
-      border:1px solid var(--border);background:var(--surface);
-      color:var(--muted);font-size:13px;font-weight:300;cursor:pointer;
-      display:flex;align-items:center;justify-content:center;
-      transition:transform .2s,box-shadow .2s,border-color .2s;
-      backdrop-filter:blur(8px);
-    }
-    .ctrl-btn:hover{border-color:var(--accent);color:var(--text);box-shadow:0 0 20px var(--accent-glow)}
-    .ctrl-btn.danger:hover{background:rgba(255,92,122,.15);border-color:var(--danger);color:#fff;box-shadow:0 0 18px rgba(255,92,122,.35)}
-
-    .voice-stage{
-      flex-shrink:0;display:flex;flex-direction:column;align-items:center;
-      padding:8px 20px 4px;gap:10px;
-    }
-    .voice-orbit{
-      position:relative;width:112px;height:112px;display:flex;align-items:center;justify-content:center;
-    }
-    .voice-ring{
-      position:absolute;border-radius:50%;pointer-events:none;border:1px solid transparent;
-    }
-    .voice-ring--outer{
-      inset:-6px;
-      border-color:rgba(139,124,255,.25);
-      animation:ringDrift 6s ease-in-out infinite;
-    }
-    .voice-ring--mid{
-      inset:8px;
-      border-color:rgba(62,232,255,.15);
-      animation:ringDrift 4s ease-in-out infinite reverse;
-    }
-    @keyframes ringDrift{0%,100%{transform:rotate(0deg) scale(1);opacity:.9}50%{transform:rotate(180deg) scale(1.03);opacity:.6}}
-
-    #orb{
-      position:relative;width:56px;height:56px;border-radius:50%;
-      background:radial-gradient(circle at 35% 30%,rgba(255,255,255,.25),rgba(100,80,200,.4) 45%,rgba(20,15,40,.9));
-      box-shadow:
-        0 0 40px rgba(139,124,255,.35),
-        inset 0 0 20px rgba(255,255,255,.08);
-      transition:transform .5s cubic-bezier(.34,1.56,.64,1),box-shadow .4s;
-      z-index:2;
-    }
-    #orb::after{
-      content:"";position:absolute;inset:-3px;border-radius:50%;
-      background:conic-gradient(from 180deg,var(--accent),var(--cyan),var(--accent2),var(--accent));
-      opacity:0;z-index:-1;filter:blur(8px);
-      transition:opacity .4s;
-      animation:spinGlow 4s linear infinite;
-      animation-play-state:paused;
-    }
-    @keyframes spinGlow{to{transform:rotate(360deg)}}
-
-    body[data-voice="escuchando"] #orb,
-    body[data-voice="listo"] #orb{
-      box-shadow:0 0 50px var(--mint-dim),inset 0 0 24px rgba(93,255,196,.15);
-      animation:nucleoBreath 2.4s ease-in-out infinite;
-    }
-    body[data-voice="escuchando"] #orb::after,
-    body[data-voice="listo"] #orb::after{opacity:.35;animation-play-state:running}
-
-    body[data-voice="transcribiendo"] #orb{
-      box-shadow:0 0 45px var(--accent-glow);
-      animation:nucleoSpin 2s linear infinite;
-    }
-    body[data-voice="pensando"] #orb{
-      box-shadow:0 0 48px var(--accent2-glow);
-      animation:nucleoPulse 1.2s ease-in-out infinite;
-    }
-    body[data-voice="hablando"] #orb{
-      transform:scale(1.08);
-      box-shadow:0 0 60px var(--accent2-glow),0 0 100px var(--cyan-dim),inset 0 0 30px rgba(255,92,157,.2);
-      animation:nucleoSpeak .55s ease-in-out infinite;
-    }
-    body[data-voice="hablando"] #orb::after{opacity:.65;animation-play-state:running}
-
-    body[data-voice="error"] #orb{background:radial-gradient(circle,rgba(255,92,122,.5),rgba(60,20,30,.95));box-shadow:0 0 40px rgba(255,92,122,.5)}
-    body[data-voice="idle"] #orb{
-      opacity:.65;
-      box-shadow:0 0 24px rgba(100,100,140,.2);
-      animation:none;
-    }
-    body[data-voice="idle"] #orb::after{opacity:0}
-
-    @keyframes nucleoBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
-    @keyframes nucleoPulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.12);opacity:.88}}
-    @keyframes nucleoSpeak{0%,100%{transform:scale(1.08)}50%{transform:scale(1.14)}}
-    @keyframes nucleoSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-
-    body[data-voice="hablando"] .voice-ring--outer{border-color:rgba(255,92,157,.4);animation-duration:2.5s}
-    body[data-voice="hablando"] .voice-ring--mid{border-color:rgba(62,232,255,.35)}
-
-    #status-text{
-      font-size:12px;font-weight:500;letter-spacing:.02em;color:var(--muted);max-width:320px;text-align:center;line-height:1.45;
-    }
-    body[data-voice="hablando"] #status-text{color:rgba(255,180,210,.85);text-shadow:0 0 24px var(--accent2-glow)}
-
-    #chat{
-      flex:1;min-height:0;overflow-y:auto;padding:14px 22px 12px;
-      display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth;
-      mask-image:linear-gradient(180deg,transparent,black 12px,black calc(100% - 12px),transparent);
-    }
-    #chat::-webkit-scrollbar{width:5px}
-    #chat::-webkit-scrollbar-thumb{
-      background:linear-gradient(180deg,var(--accent),var(--accent2));border-radius:99px;opacity:.5;
-    }
-    .burbuja{
-      max-width:88%;padding:14px 18px;font-size:14px;line-height:1.55;font-weight:400;
-      animation:aparecer .4s cubic-bezier(.22,1,.36,1) both;
-      backdrop-filter:blur(10px);
-    }
-    @keyframes aparecer{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
-    .burbuja.usuario{
-      align-self:flex-end;
-      background:var(--user-bg);
-      border:1px solid rgba(139,124,255,.35);
-      border-radius:var(--radius-bubble) var(--radius-bubble) 6px var(--radius-bubble);
-      box-shadow:0 8px 32px rgba(139,124,255,.12),inset 0 1px 0 rgba(255,255,255,.06);
-    }
-    .burbuja.charvis{
-      align-self:flex-start;
-      background:var(--charvis-bg);
-      border:1px solid rgba(62,232,255,.2);
-      border-radius:var(--radius-bubble) var(--radius-bubble) var(--radius-bubble) 10px;
-      box-shadow:0 8px 28px rgba(0,0,0,.25),inset 0 1px 0 rgba(255,255,255,.04);
-    }
-    .burbuja .label{
-      font-size:10px;letter-spacing:.2em;text-transform:uppercase;margin-bottom:6px;
-      font-family:'Syncopate',sans-serif;font-weight:600;opacity:.75;
-    }
-    .burbuja.usuario .label{color:var(--accent);text-align:right}
-    .burbuja.charvis .label{color:var(--cyan);text-align:left}
-    .burbuja.error-msg{
-      align-self:center;background:rgba(255,60,80,.1);border:1px solid rgba(255,92,122,.45);
-      color:#ffb4c0;font-size:12px;border-radius:var(--radius-soft);padding:12px 18px;
+        radial-gradient(ellipse 60% 40% at 20% 50%, rgba(108,92,231,.07) 0%, transparent 70%),
+        radial-gradient(ellipse 50% 30% at 80% 20%, rgba(0,206,201,.05) 0%, transparent 70%);
+      pointer-events: none;
     }
 
-    #wave-container.wave-strip{
-      display:flex;align-items:flex-end;justify-content:center;gap:4px;height:52px;padding:6px 28px 10px;
-      flex-shrink:0;
-    }
-    .bar{
-      width:4px;border-radius:99px;
-      background:linear-gradient(180deg,var(--cyan),var(--accent));
-      height:5px;opacity:.35;transition:opacity .2s;
-    }
-    .bar.active{
-      opacity:1;
-      background:linear-gradient(180deg,var(--mint),var(--accent),var(--accent2));
-      box-shadow:0 0 12px var(--cyan-dim);
-      animation:onda var(--d,.75s) cubic-bezier(.45,0,.55,1) infinite alternate;
-    }
-    @keyframes onda{from{height:6px;transform:scaleY(.85)}to{height:32px;transform:scaleY(1)}}
-
-    body[data-voice="hablando"] .bar.active{
-      background:linear-gradient(180deg,var(--accent2),var(--accent));
-      box-shadow:0 0 14px var(--accent2-glow);
+    #app {
+      position: relative; z-index: 1;
+      display: flex; flex-direction: column;
+      height: 100vh; max-width: 560px;
+      margin: 0 auto;
     }
 
-    #controls{
-      flex-shrink:0;padding:14px 22px 20px;display:flex;gap:12px;
-      border-top:1px solid var(--glass);
-      background:linear-gradient(0deg,rgba(8,8,14,.9),transparent);
+    /* ── Header ── */
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 24px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(8,8,16,.8);
+      backdrop-filter: blur(12px);
     }
-    .btn{
-      flex:1;padding:13px 16px;border-radius:999px;
-      border:1px solid var(--border);background:var(--surface);
-      color:var(--muted);font-family:'Outfit',sans-serif;font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
-      cursor:pointer;transition:all .25s;backdrop-filter:blur(12px);
+    .logo-wrap { display: flex; align-items: center; gap: 12px; }
+    .logo-mark {
+      width: 32px; height: 32px;
+      border: 1.5px solid var(--accent);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Syne', sans-serif;
+      font-weight: 800; font-size: 14px;
+      color: var(--accent);
+      box-shadow: 0 0 12px rgba(108,92,231,.3);
     }
-    .btn:hover{border-color:rgba(139,124,255,.5);color:var(--text);box-shadow:0 4px 24px rgba(139,124,255,.15)}
-    .btn.primary{
-      background:linear-gradient(135deg,rgba(139,124,255,.35),rgba(100,70,220,.25));
-      border-color:rgba(139,124,255,.55);color:#fff;
-      box-shadow:0 0 28px rgba(139,124,255,.2),inset 0 1px 0 rgba(255,255,255,.1);
+    .logo-text {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800; font-size: 16px;
+      letter-spacing: 4px;
+      background: linear-gradient(135deg, var(--accent), var(--cyan));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     }
-    .btn.primary:hover{box-shadow:0 0 36px var(--accent-glow)}
-    .btn.warn{border-color:rgba(255,92,157,.45);color:#ffc8dc}
-    .btn.warn:hover{background:rgba(255,92,157,.15);border-color:var(--accent2);color:#fff;box-shadow:0 0 28px var(--accent2-glow)}
+    .header-right { display: flex; align-items: center; gap: 10px; }
 
-    #empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:14px;color:var(--muted);font-size:13px;font-weight:400}
-    #empty .orb-placeholder{
-      width:72px;height:72px;border-radius:50%;
-      background:radial-gradient(circle at 40% 35%,rgba(255,255,255,.12),rgba(80,60,140,.2));
-      border:1px solid var(--border);box-shadow:0 0 40px rgba(139,124,255,.15);
-      animation:emptyFloat 5s ease-in-out infinite;
+    /* ── Status ── */
+    #status-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 24px;
+      font-size: 10px; letter-spacing: 1px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      background: rgba(8,8,16,.6);
     }
-    @keyframes emptyFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
-    #empty .hint{font-size:11px;letter-spacing:.06em;opacity:.75;max-width:220px;text-align:center;line-height:1.5}
-    #mic-error{display:none;text-align:center;padding:20px;color:#ffb4c0;font-size:12px}
+    #orb {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--muted); flex-shrink: 0;
+      transition: all .3s;
+    }
+    #orb.escuchando { background: var(--success); box-shadow: 0 0 10px var(--success); animation: pulso 1.4s infinite; }
+    #orb.transcribiendo { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+    #orb.pensando { background: var(--accent2); box-shadow: 0 0 10px var(--accent2); animation: pulso .8s infinite; }
+    #orb.hablando { background: var(--cyan); box-shadow: 0 0 12px var(--cyan); animation: pulso .5s infinite; }
+    #orb.error { background: var(--danger); }
+    @keyframes pulso { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.5);opacity:.7} }
+
+    /* ── Chat ── */
+    #chat {
+      flex: 1; overflow-y: auto;
+      padding: 20px 20px;
+      display: flex; flex-direction: column; gap: 14px;
+      scroll-behavior: smooth;
+    }
+    #chat::-webkit-scrollbar { width: 3px; }
+    #chat::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .burbuja {
+      max-width: 82%;
+      padding: 10px 14px;
+      border-radius: 14px;
+      font-size: 13px; line-height: 1.65;
+      animation: aparecer .2s ease-out;
+    }
+    @keyframes aparecer { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+
+    .burbuja.usuario {
+      align-self: flex-end;
+      background: var(--user-bg);
+      border: 1px solid rgba(108,92,231,.4);
+      border-bottom-right-radius: 4px;
+    }
+    .burbuja.charvis {
+      align-self: flex-start;
+      background: var(--bot-bg);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 4px;
+    }
+    .burbuja .label {
+      font-size: 8px; font-weight: 700;
+      letter-spacing: 2px; margin-bottom: 5px;
+      font-family: 'Syne', sans-serif;
+    }
+    .burbuja.usuario .label { color: var(--accent); text-align: right; }
+    .burbuja.charvis .label { color: var(--cyan); }
+
+    .burbuja.error-msg {
+      align-self: center;
+      background: rgba(255,118,117,.08);
+      border: 1px solid var(--danger);
+      color: var(--danger);
+      font-size: 11px; border-radius: 8px;
+    }
+
+    /* ── Estado vacío ── */
+    #empty {
+      flex: 1; display: flex;
+      flex-direction: column; align-items: center; justify-content: center;
+      gap: 10px; color: var(--border);
+    }
+    #empty .big {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800; font-size: 64px;
+      letter-spacing: 6px;
+      background: linear-gradient(135deg, var(--border), rgba(108,92,231,.3));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    #empty .sub { font-size: 11px; color: var(--muted); letter-spacing: 2px; }
+
+    /* ── Onda ── */
+    #wave-container {
+      display: flex; align-items: center; justify-content: center;
+      gap: 3px; height: 44px; padding: 0 24px;
+      border-top: 1px solid var(--border);
+      background: rgba(8,8,16,.6);
+    }
+    .bar { width: 3px; border-radius: 3px; height: 4px; background: var(--accent); }
+    .bar.active { animation: onda var(--d,.8s) ease-in-out infinite alternate; }
+    @keyframes onda { from{height:4px} to{height:26px} }
+
+    /* ── Controles ── */
+    #controls {
+      display: flex; gap: 10px;
+      padding: 14px 20px 20px;
+      background: rgba(8,8,16,.9);
+      border-top: 1px solid var(--border);
+    }
+    .btn {
+      flex: 1; padding: 11px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-family: 'Syne', sans-serif;
+      font-size: 10px; font-weight: 700;
+      letter-spacing: 1.5px; cursor: pointer;
+      transition: all .2s;
+    }
+    .btn:hover { border-color: var(--accent); color: var(--text); }
+    .btn.primary {
+      background: linear-gradient(135deg, var(--accent), #4a3aad);
+      border-color: var(--accent); color: #fff;
+    }
+    .btn.primary:hover { opacity: .85; }
+    .btn.warn { border-color: var(--accent2); color: var(--accent2); }
+    .btn.warn:hover { background: rgba(253,121,168,.1); }
+
+    /* ── Mic error ── */
+    #mic-error {
+      display: none; text-align: center;
+      padding: 20px; color: var(--danger); font-size: 12px; line-height: 1.8;
+    }
+
+    /* ── Conexión ── */
+    #conn-badge {
+      font-size: 9px; letter-spacing: 1px; padding: 3px 8px;
+      border-radius: 20px; border: 1px solid;
+      transition: all .3s;
+    }
+    #conn-badge.conectado { color: var(--success); border-color: var(--success); }
+    #conn-badge.desconectado { color: var(--danger); border-color: var(--danger); }
   </style>
 </head>
-<body data-voice="idle">
-  <div class="ambient-grid" aria-hidden="true"></div>
-  <div class="shell">
-  <header id="titlebar">
-    <span class="logo">CHARVIS</span>
-    <div class="controls">
-      <button type="button" class="ctrl-btn" onclick="window.charvis.minimizar()" title="Minimizar">−</button>
-      <button type="button" class="ctrl-btn danger" onclick="window.charvis.cerrar()" title="Cerrar">×</button>
+<body>
+<div id="app">
+
+  <header>
+    <div class="logo-wrap">
+      <div class="logo-mark">C</div>
+      <span class="logo-text">CHARVIS</span>
+    </div>
+    <div class="header-right">
+      <span id="conn-badge" class="desconectado">OFFLINE</span>
     </div>
   </header>
-  <section class="voice-stage" aria-live="polite">
-    <div class="voice-orbit">
-      <span class="voice-ring voice-ring--outer" aria-hidden="true"></span>
-      <span class="voice-ring voice-ring--mid" aria-hidden="true"></span>
-      <div id="orb"></div>
-    </div>
-    <p id="status-text">Iniciando...</p>
-  </section>
-  <div id="chat">
-    <div id="empty"><div class="orb-placeholder"></div><span class="hint">Tu interfaz de voz lista.<br>Cuando sea tu turno, habla con claridad.</span></div>
-    <div id="mic-error">No se pudo acceder al microfono.<br>Permiti el acceso en la configuracion del sistema.</div>
+
+  <div id="status-bar">
+    <div id="orb"></div>
+    <span id="status-text">Conectando...</span>
   </div>
-  <div id="wave-container" class="wave-strip"></div>
+
+  <div id="chat">
+    <div id="empty">
+      <div class="big">C</div>
+      <div class="sub">HABLÁ CUANDO ESTÉS LISTO</div>
+    </div>
+    <div id="mic-error">
+      No se pudo acceder al micrófono.<br/>
+      Permitir acceso en la configuración del navegador.
+    </div>
+  </div>
+
+  <div id="wave-container"></div>
+
   <div id="controls">
     <button class="btn warn" onclick="limpiar()">NUEVA CHARLA</button>
-    <button class="btn" id="btn-toggle" onclick="toggleEscucha()">INICIAR</button>
+    <button class="btn primary" id="btn-toggle" onclick="toggleEscucha()">DETENER</button>
   </div>
-  </div>
+
+</div>
 <script>
-  // ── Estado UI ────────────────────────────────────────────────
-  let activoUI = false;
-  let estadoMain = "";
-  /** El main manda micGate: solo entonces se puede grabar o enviar (evita auto-eco). */
-  let micPermitido = false;
-  let gateEpoch = 0;
-  let epochAlIniciarGrabacion = 0;
-  let isRecording = false;
-  let silenceTimer = null;
-  let vadInterval = null;
-  let audioCtx = null;
-  let analyser = null;
-  let mediaRecorder = null;
-  let audioChunks = [];
-  const wc = document.getElementById("wave-container");
-  for(let i=0;i<32;i++){const b=document.createElement("div");b.className="bar";b.style.setProperty("--d",(0.35+Math.random()*0.55)+"s");b.style.animationDelay=(Math.random()*0.5)+"s";wc.appendChild(b);}
-  function setWave(on,color){document.querySelectorAll(".bar").forEach(b=>{b.classList.toggle("active",on);b.style.background=color||"var(--accent)"});}
-  const estados={
-    escuchando:{texto:"Tu turno — habla; al callar se envia y Charvis responde.",orb:"escuchando",wave:true,wcolor:"var(--success)"},
-    transcribiendo:{texto:"Tu turno termino — procesando voz...",orb:"transcribiendo",wave:false},
-    pensando:{texto:"Turno de Charvis — preparando respuesta...",orb:"pensando",wave:false},
-    hablando:{texto:"Turno de Charvis — no hable hasta que termine.",orb:"hablando",wave:true,wcolor:"var(--accent2)"},
-    detenido:{texto:"Pausado",orb:"",wave:false},
-    listo:{texto:"Listo — tu turno otra vez.",orb:"escuchando",wave:false},
-    error:{texto:"Error",orb:"error",wave:false},
-  };
-  function aplicarEstado(n){
-    const e=estados[n]||estados.escuchando;
-    document.getElementById("status-text").textContent=e.texto;
-    document.getElementById("orb").className=e.orb||"";
-    const dv=n==="detenido"?"idle":(n==="listo"?"listo":(n==="error"?"error":(e.orb||"escuchando")));
-    document.body.dataset.voice=dv;
-    setWave(e.wave||false,e.wcolor);
-  }
-  function agregarMensaje(rol,texto){
-    const empty=document.getElementById("empty");if(empty)empty.remove();
-    const chat=document.getElementById("chat");
-    const div=document.createElement("div");div.className="burbuja "+rol;
-    const label=document.createElement("div");label.className="label";label.textContent=rol==="usuario"?"VOS":"CHARVIS";
-    const content=document.createElement("div");content.textContent=texto;
-    div.appendChild(label);div.appendChild(content);chat.appendChild(div);chat.scrollTop=chat.scrollHeight;
-  }
-  function agregarError(texto){const chat=document.getElementById("chat");const div=document.createElement("div");div.className="burbuja error-msg";div.textContent="! "+texto;chat.appendChild(div);chat.scrollTop=chat.scrollHeight;}
-  function toggleEscucha(){
-    const btn=document.getElementById("btn-toggle");
-    if(activoUI){
-      activoUI=false;
-      window.charvis.detener();
-      detenerGrabacion();
-      detenerAudio();
-      window.speechSynthesis.cancel();
-      colaVoz.length=0;hablando=false;streamDone=false;
-      btn.textContent="INICIAR";btn.classList.remove("primary");
-      aplicarEstado("detenido");
-    }else{
-      activoUI=true;
-      window.charvis.iniciar();
-      btn.textContent="DETENER";btn.classList.add("primary");
-      aplicarEstado("escuchando");
-    }
-  }
-  function limpiar(){detenerAudio();window.charvis.limpiar();}
+// ── WebSocket ────────────────────────────────────────────────
+const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+let ws = null;
+let wsReady = false;
 
-  window.charvis.onMicGate((permitido) => {
-    gateEpoch++;
-    micPermitido = !!permitido;
-    if (!micPermitido && isRecording) detenerGrabacion();
-  });
+function conectar() {
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = "arraybuffer";
 
-  // ── Audio playback + TTS (una sola señal vozTerminada al main cuando todo terminó) ──
-  let currentAudio = null;
-  let audioQueue = [];
-  let playingAudio = false;
-  let streamDone = false;
-  const colaVoz = [];
-  let hablando = false;
-
-  function notificarVozTerminadaAlMain() {
-    window.charvis.vozTerminada();
-  }
-
-  /** Hay audio/TTS pendiente o sonando (no confundir con cola vacía justo antes de hablar). */
-  function playbackPendiente() {
-    return playingAudio || audioQueue.length > 0 || hablando || colaVoz.length > 0;
-  }
-
-  /**
-   * El main envía streamTerminado cuando el LLM terminó, pero el TTS puede seguir minutos.
-   * Solo avisamos al main (desbloquea mic / IPC) cuando streamDone y ya no queda nada por reproducir.
-   */
-  function intentarNotificarVozTerminada() {
-    if (!streamDone) return;
-    if (playbackPendiente()) return;
-    streamDone = false;
-    notificarVozTerminadaAlMain();
-  }
-
-  function playNext() {
-    if (playingAudio || audioQueue.length === 0) {
-      intentarNotificarVozTerminada();
-      return;
-    }
-    playingAudio = true;
-    const src = audioQueue.shift();
-    currentAudio = new Audio(src);
-    currentAudio.onended = () => {
-      URL.revokeObjectURL(src);
-      playingAudio = false;
-      currentAudio = null;
-      playNext();
-    };
-    currentAudio.onerror = () => {
-      playingAudio = false;
-      currentAudio = null;
-      playNext();
-    };
-    currentAudio.play().catch(() => { playingAudio = false; playNext(); });
-  }
-
-  function detenerAudio() {
-    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-    audioQueue.forEach(src => URL.revokeObjectURL(src));
-    audioQueue = [];
-    playingAudio = false;
-    streamDone = false;
-  }
-
-  window.charvis.onDetenerVoz(() => {
-    detenerAudio();
-    window.speechSynthesis.cancel();
-    colaVoz.length = 0;
-    hablando = false;
-    streamDone = false;
-  });
-
-  window.charvis.onReproducir((base64) => {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for(let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: "audio/mpeg" });
-    audioQueue.push(URL.createObjectURL(blob));
-    playNext();
-  });
-
-  function procesarCola(){
-    if(hablando||colaVoz.length===0){
-      if(!hablando&&colaVoz.length===0) intentarNotificarVozTerminada();
-      return;
-    }
-    hablando=true;
-    const utter=new SpeechSynthesisUtterance(colaVoz.shift());
-    utter.lang="es-AR";utter.rate=1.1;utter.pitch=0.8;
-    utter.onend=()=>{hablando=false;procesarCola();};
-    utter.onerror=()=>{hablando=false;procesarCola();};
-    window.speechSynthesis.speak(utter);
-  }
-  window.charvis.onHablar((f)=>{colaVoz.push(f);procesarCola();});
-  window.charvis.onStreamTerminado(()=>{streamDone=true;procesarCola();playNext();});
-
-  // ── VAD + MediaRecorder ──────────────────────────────────────
-  const VOICE_THRESHOLD  = 0.025;  // RMS para detectar voz
-  /** Silencio continuo despues de que hablaste: se cierra el clip y se envia (luego responde Charvis). */
-  const SILENCE_MS = 2000;
-
-  function salidaAudioActiva() {
-    return playbackPendiente();
-  }
-  function mainProcesando() {
-    return ["transcribiendo","pensando","hablando"].includes(estadoMain);
-  }
-
-  async function iniciarVAD() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      audioCtx = new AudioContext();
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      audioCtx.createMediaStreamSource(stream).connect(analyser);
-
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-      // MediaRecorder para capturar audio
-      mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-      mediaRecorder.ondataavailable = e => { if(e.data.size > 0) audioChunks.push(e.data); };
-      mediaRecorder.onstop = async () => {
-        if(!activoUI) return;
-        const epochGrabacion = epochAlIniciarGrabacion;
-        if(epochGrabacion !== gateEpoch || !micPermitido) {
-          audioChunks = [];
-          return;
-        }
-        const blob = new Blob(audioChunks, { type: "audio/webm" });
-        audioChunks = [];
-        if(blob.size < 1500) return;
-        const arrayBuffer = await blob.arrayBuffer();
-        if(epochGrabacion !== gateEpoch || !micPermitido) return;
-        window.charvis.enviarAudio(new Uint8Array(arrayBuffer));
-      };
-
-      // Por turnos: sin interrupcion por voz; el main abre el mic solo cuando toca al usuario (micGate).
-      vadInterval = setInterval(() => {
-        if(!activoUI) return;
-        analyser.getByteTimeDomainData(dataArray);
-        const rms = Math.sqrt(dataArray.reduce((s,v) => s + (v-128)**2, 0) / dataArray.length) / 128;
-
-        const ocupadoRemoto = mainProcesando();
-        const charvisSuena = salidaAudioActiva();
-
-        if(ocupadoRemoto || charvisSuena) return;
-        if(!micPermitido) return;
-
-        if(rms > VOICE_THRESHOLD && !isRecording) {
-          comenzarGrabacion();
-        } else if(rms < VOICE_THRESHOLD && isRecording) {
-          if(!silenceTimer) {
-            silenceTimer = setTimeout(() => {
-              detenerGrabacion();
-              silenceTimer = null;
-            }, SILENCE_MS);
-          }
-        } else if(rms > VOICE_THRESHOLD && isRecording && silenceTimer) {
-          clearTimeout(silenceTimer);
-          silenceTimer = null;
-        }
-      }, 100);
-
-      const btn=document.getElementById("btn-toggle");
-      activoUI=true;
-      window.charvis.iniciar();
-      btn.textContent="DETENER";
-      btn.classList.add("primary");
-      aplicarEstado("escuchando");
-      console.log("[VAD] Microfono listo");
-
-    } catch(err) {
-      console.error("[MIC]", err.message);
-      document.getElementById("mic-error").style.display = "block";
-      document.getElementById("empty")?.remove();
-      agregarError("No se pudo acceder al microfono: " + err.message);
-    }
-  }
-
-  function comenzarGrabacion() {
-    if(!micPermitido || !activoUI || isRecording || !mediaRecorder) return;
-    epochAlIniciarGrabacion = gateEpoch;
-    isRecording = true;
-    audioChunks = [];
-    mediaRecorder.start();
-    console.log("[VAD] Grabando...");
-  }
-
-  function detenerGrabacion() {
-    if(!isRecording || !mediaRecorder) return;
-    isRecording = false;
-    if(mediaRecorder.state === "recording") mediaRecorder.stop();
-    console.log("[VAD] Grabacion detenida");
-  }
-
-  // ── IPC listeners ────────────────────────────────────────────
-  window.charvis.onEstado((estado) => {
-    estadoMain = estado;
-    aplicarEstado(estado);
-  });
-  window.charvis.onMensaje(({rol,texto}) => agregarMensaje(rol,texto));
-  window.charvis.onError((msg) => { aplicarEstado("error"); agregarError(msg); });
-  window.charvis.onLimpiar(() => {
-    document.getElementById("chat").innerHTML = '<div id="empty"><div class="orb-placeholder"></div><span class="hint">Tu interfaz de voz lista.<br>Cuando sea tu turno, habla con claridad.</span></div>';
+  ws.onopen = () => {
+    wsReady = true;
+    badge("conectado", "EN LÍNEA");
     aplicarEstado("escuchando");
-  });
+    iniciarVAD();
+  };
 
-  // ── Arranque ─────────────────────────────────────────────────
-  window.addEventListener("DOMContentLoaded", () => iniciarVAD());
+  ws.onclose = () => {
+    wsReady = false;
+    badge("desconectado", "OFFLINE");
+    aplicarEstado("error");
+    document.getElementById("status-text").textContent = "Reconectando...";
+    setTimeout(conectar, 3000);
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    switch(msg.type) {
+      case "estado":       aplicarEstado(msg.valor); break;
+      case "mensaje":      agregarMensaje(msg.rol, msg.texto); break;
+      case "error":        aplicarEstado("error"); agregarError(msg.mensaje); break;
+      case "limpiar":      limpiarChat(); break;
+      case "reproducir":   encolarMP3(msg.data); break;
+      case "hablar":       encolarVoz(msg.texto); break;
+      case "streamTerminado": streamDone = true; playNext(); procesarCola(); break;
+    }
+  };
+}
+conectar();
+
+function badge(cls, txt) {
+  const b = document.getElementById("conn-badge");
+  b.className = cls; b.textContent = txt;
+}
+
+function enviarAudio(data) {
+  if (wsReady && ws.readyState === WebSocket.OPEN) ws.send(data);
+}
+
+function enviarControl(obj) {
+  if (wsReady && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// ── UI ───────────────────────────────────────────────────────
+let activoUI = true;
+const wc = document.getElementById("wave-container");
+for(let i=0;i<22;i++){const b=document.createElement("div");b.className="bar";b.style.setProperty("--d",(0.4+Math.random()*0.7)+"s");b.style.animationDelay=(Math.random()*0.5)+"s";wc.appendChild(b);}
+
+function setWave(on, color) {
+  document.querySelectorAll(".bar").forEach(b => {
+    b.classList.toggle("active", on);
+    b.style.background = color || "var(--accent)";
+  });
+}
+
+const ESTADOS = {
+  escuchando    : { texto:"Escuchando...",           orb:"escuchando",    wave:true,  wcolor:"var(--success)" },
+  transcribiendo: { texto:"Procesando voz...",       orb:"transcribiendo",wave:false },
+  pensando      : { texto:"Charvis está pensando...",orb:"pensando",      wave:false },
+  hablando      : { texto:"Charvis habla...",        orb:"hablando",      wave:true,  wcolor:"var(--cyan)" },
+  detenido      : { texto:"Pausado",                 orb:"",              wave:false },
+  error         : { texto:"Error de conexión",       orb:"error",         wave:false },
+};
+
+let isHablando = false;
+
+function aplicarEstado(n) {
+  const e = ESTADOS[n] || ESTADOS.escuchando;
+  document.getElementById("status-text").textContent = e.texto;
+  document.getElementById("orb").className = e.orb || "";
+  setWave(e.wave || false, e.wcolor);
+  isHablando = (n === "hablando");
+}
+
+function agregarMensaje(rol, texto) {
+  document.getElementById("empty")?.remove();
+  const chat = document.getElementById("chat");
+  const div = document.createElement("div");
+  div.className = "burbuja " + rol;
+  const label = document.createElement("div");
+  label.className = "label";
+  label.textContent = rol === "usuario" ? "VOS" : "CHARVIS";
+  const content = document.createElement("div");
+  content.textContent = texto;
+  div.appendChild(label); div.appendChild(content);
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function agregarError(texto) {
+  const chat = document.getElementById("chat");
+  const div = document.createElement("div");
+  div.className = "burbuja error-msg";
+  div.textContent = "⚠ " + texto;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function limpiarChat() {
+  document.getElementById("chat").innerHTML =
+    '<div id="empty"><div class="big">C</div><div class="sub">HABLÁ CUANDO ESTÉS LISTO</div></div>';
+}
+
+function toggleEscucha() {
+  const btn = document.getElementById("btn-toggle");
+  activoUI = !activoUI;
+  btn.textContent = activoUI ? "DETENER" : "INICIAR";
+  btn.classList.toggle("primary", activoUI);
+  if (!activoUI) detenerAudio();
+}
+
+function limpiar() {
+  detenerAudio();
+  enviarControl({ type: "limpiar" });
+}
+
+// ── Audio Playback (ElevenLabs MP3) ─────────────────────────
+let audioQueue = [];
+let playingAudio = false;
+let streamDone = false;
+let currentAudio = null;
+
+function encolarMP3(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++) bytes[i]=binary.charCodeAt(i);
+  const blob = new Blob([bytes], { type:"audio/mpeg" });
+  audioQueue.push(URL.createObjectURL(blob));
+  playNext();
+}
+
+function playNext() {
+  if (playingAudio || audioQueue.length === 0) {
+    if (!playingAudio && audioQueue.length === 0 && streamDone) {
+      streamDone = false;
+      vozTerminada();
+    }
+    return;
+  }
+  playingAudio = true;
+  const src = audioQueue.shift();
+  currentAudio = new Audio(src);
+  currentAudio.onended = () => { URL.revokeObjectURL(src); playingAudio=false; currentAudio=null; playNext(); };
+  currentAudio.onerror = () => { playingAudio=false; currentAudio=null; playNext(); };
+  currentAudio.play().catch(() => { playingAudio=false; playNext(); });
+}
+
+// ── Fallback Web Speech API ──────────────────────────────────
+const colaVoz = [];
+let hablando = false;
+
+function encolarVoz(texto) { colaVoz.push(texto); procesarCola(); }
+
+function procesarCola() {
+  if (hablando || colaVoz.length === 0) {
+    if (!hablando && colaVoz.length === 0 && streamDone) {
+      streamDone = false;
+      vozTerminada();
+    }
+    return;
+  }
+  hablando = true;
+  const utter = new SpeechSynthesisUtterance(colaVoz.shift());
+  utter.lang = "es-AR"; utter.rate = 1.1; utter.pitch = 0.8;
+  utter.onend  = () => { hablando=false; procesarCola(); };
+  utter.onerror = () => { hablando=false; procesarCola(); };
+  window.speechSynthesis.speak(utter);
+}
+
+function vozTerminada() {
+  aplicarEstado("escuchando");
+}
+
+function detenerAudio() {
+  if (currentAudio) { currentAudio.pause(); currentAudio=null; }
+  audioQueue.forEach(s => URL.revokeObjectURL(s));
+  audioQueue = []; playingAudio = false; streamDone = false;
+  window.speechSynthesis.cancel();
+  colaVoz.length = 0; hablando = false;
+}
+
+// ── VAD + MediaRecorder ──────────────────────────────────────
+let analyser       = null;
+let mediaRecorder  = null;
+let audioChunks    = [];
+let isRecording    = false;
+let silenceTimer   = null;
+let vadInterval    = null;
+
+const VOICE_THRESHOLD     = 0.022;
+const INTERRUPT_THRESHOLD = 0.04;
+const SILENCE_MS          = 1500;
+
+async function iniciarVAD() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+    const audioCtx = new AudioContext();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    audioCtx.createMediaStreamSource(stream).connect(analyser);
+
+    // Elegir mejor mimeType disponible
+    const mimeType = ["audio/webm;codecs=opus","audio/webm","audio/ogg"].find(m => MediaRecorder.isTypeSupported(m)) || "";
+    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+    mediaRecorder.ondataavailable = e => { if(e.data.size>0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      if(!activoUI || !wsReady) return;
+      const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+      audioChunks = [];
+      const buf = await blob.arrayBuffer();
+      if (buf.byteLength > 2000) enviarAudio(buf);
+      else aplicarEstado("escuchando");
+    };
+
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+    vadInterval = setInterval(() => {
+      if (!activoUI || !wsReady) return;
+      analyser.getByteTimeDomainData(dataArray);
+      const rms = Math.sqrt(dataArray.reduce((s,v) => s+(v-128)**2, 0) / dataArray.length) / 128;
+
+      // Interrumpir si Charvis habla y el usuario habla fuerte
+      if (isHablando && rms > INTERRUPT_THRESHOLD) {
+        detenerAudio();
+        aplicarEstado("escuchando");
+        comenzarGrabacion();
+        return;
+      }
+
+      if (!isHablando) {
+        if (rms > VOICE_THRESHOLD && !isRecording) {
+          comenzarGrabacion();
+        } else if (rms < VOICE_THRESHOLD && isRecording) {
+          if (!silenceTimer) silenceTimer = setTimeout(() => { detenerGrabacion(); silenceTimer=null; }, SILENCE_MS);
+        } else if (rms > VOICE_THRESHOLD && isRecording && silenceTimer) {
+          clearTimeout(silenceTimer); silenceTimer=null;
+        }
+      }
+    }, 100);
+
+  } catch(err) {
+    console.error("[MIC]", err.message);
+    document.getElementById("mic-error").style.display = "block";
+    document.getElementById("empty")?.remove();
+  }
+}
+
+function comenzarGrabacion() {
+  if (isRecording || !mediaRecorder) return;
+  isRecording = true; audioChunks = [];
+  mediaRecorder.start();
+}
+
+function detenerGrabacion() {
+  if (!isRecording || !mediaRecorder) return;
+  isRecording = false;
+  if (mediaRecorder.state === "recording") mediaRecorder.stop();
+}
 </script>
 </body>
 </html>

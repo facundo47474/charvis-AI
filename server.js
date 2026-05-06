@@ -6,6 +6,8 @@ const path       = require("path");
 const fs         = require("fs");
 const https      = require("https");
 const Groq       = require("groq-sdk");
+const pdfParse   = require("pdf-parse");
+const mammoth    = require("mammoth");
 
 if (!process.env.GROQ_API_KEY) throw new Error("Falta GROQ_API_KEY en .env");
 
@@ -13,8 +15,13 @@ const groq          = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY || "";
 const VOICE_ID      = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
 const PORT          = process.env.PORT || 3000;
+const CHAT_MODEL    = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
+const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "openai/gpt-oss-120b";
+const VISION_MODEL  = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
 
 const MAX_HISTORIAL = 40;
+const MAX_FILE_BYTES = 12 * 1024 * 1024;
+const MAX_EXTRACTED_CHARS = 60000;
 
 const app    = express();
 const server = http.createServer(app);
@@ -52,6 +59,184 @@ function recortarHistorial(historial) {
     historial = [system, ...historial.slice(-(MAX_HISTORIAL))];
   }
   return historial;
+}
+
+function instruccionesCharvis() {
+  return (
+    "Sos Charvis, un asistente de IA avanzado, preciso y sofisticado, inspirado en JARVIS de Iron Man. " +
+    "Respondes con elegancia, inteligencia practica y una leve actitud britanica. " +
+    "Usas espanol rioplatense. Se claro, util y directo. " +
+    "Cuando recibas archivos o imagenes, razona sobre su contenido y responde exactamente lo que el usuario pida. " +
+    "No inventes datos que no esten en el documento o foto. Si algo no se ve o no esta en el texto extraido, decilo. " +
+    "Cuando un grafico ayude a explicar datos numericos, podes agregar al final un bloque ```chart con JSON valido: " +
+    "{\"title\":\"Titulo\",\"labels\":[\"A\",\"B\"],\"values\":[10,20],\"unit\":\"%\"}. Usalo solo si suma claridad."
+  );
+}
+
+function modoValido(modo) {
+  return modo === "razonamiento" ? "razonamiento" : "normal";
+}
+
+function normalizarNombreArchivo(nombre) {
+  return path.basename(String(nombre || "archivo")).replace(/[^\w.\- ()]/g, "_").slice(0, 140);
+}
+
+function extensionArchivo(nombre) {
+  return path.extname(String(nombre || "")).toLowerCase();
+}
+
+function extraerMimeDataUrl(contenido) {
+  const match = String(contenido || "").match(/^data:([^;,]+)[^,]*,/i);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function bufferDesdeContenido(contenido) {
+  const texto = String(contenido || "");
+  if (texto.startsWith("data:")) {
+    const comma = texto.indexOf(",");
+    if (comma === -1) throw new Error("Archivo adjunto invalido.");
+    const meta = texto.slice(0, comma).toLowerCase();
+    const data = texto.slice(comma + 1);
+    if (meta.includes(";base64")) return Buffer.from(data, "base64");
+    return Buffer.from(decodeURIComponent(data), "utf8");
+  }
+  return Buffer.from(texto, "utf8");
+}
+
+function recortarTextoExtraido(texto) {
+  const limpio = String(texto || "").replace(/\u0000/g, "").replace(/[ \t]+\n/g, "\n").trim();
+  if (limpio.length <= MAX_EXTRACTED_CHARS) return limpio;
+  return limpio.slice(0, MAX_EXTRACTED_CHARS) + "\n\n[Texto recortado por seguridad: el archivo es mas largo.]";
+}
+
+function esImagen(tipo, ext) {
+  return String(tipo || "").startsWith("image/") || [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext);
+}
+
+function esPdf(tipo, ext) {
+  return tipo === "application/pdf" || ext === ".pdf";
+}
+
+function esDocx(tipo, ext) {
+  return tipo === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ext === ".docx";
+}
+
+function esTextoPlano(tipo, ext) {
+  const extensionesTexto = new Set([
+    ".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".css", ".js", ".jsx", ".ts", ".tsx",
+    ".py", ".java", ".c", ".cpp", ".cs", ".go", ".rs", ".php", ".rb", ".sql", ".yaml", ".yml", ".log"
+  ]);
+  return String(tipo || "").startsWith("text/") ||
+    ["application/json", "application/xml", "application/javascript", "application/x-javascript"].includes(tipo) ||
+    extensionesTexto.has(ext);
+}
+
+async function analizarImagenConVision({ nombre, tipo, contenido }, pregunta) {
+  const dataUrl = String(contenido || "").startsWith("data:")
+    ? contenido
+    : `data:${tipo || "image/png"};base64,${bufferDesdeContenido(contenido).toString("base64")}`;
+
+  const completion = await groq.chat.completions.create({
+    model: VISION_MODEL,
+    messages: [{
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text:
+            "Analiza esta imagen para Charvis. Extrae objetos, escena, texto visible, datos utiles y cualquier detalle relevante. " +
+            `Nombre del archivo: ${nombre}. Pedido del usuario: ${pregunta || "Analiza la imagen."}`
+        },
+        { type: "image_url", image_url: { url: dataUrl } }
+      ]
+    }],
+    temperature: 0.2,
+    max_completion_tokens: 900,
+    stream: false
+  });
+
+  return completion.choices[0]?.message?.content?.trim() || "No se pudo obtener una descripcion visual.";
+}
+
+async function extraerTextoDocumento(buffer, tipo, ext) {
+  if (esPdf(tipo, ext)) {
+    const data = await pdfParse(buffer);
+    return data.text || "";
+  }
+
+  if (esDocx(tipo, ext)) {
+    const data = await mammoth.extractRawText({ buffer });
+    return data.value || "";
+  }
+
+  if (esTextoPlano(tipo, ext)) {
+    return buffer.toString("utf8");
+  }
+
+  throw new Error("Formato no soportado todavia. Usa imagenes, PDF, DOCX, TXT, Markdown, JSON, CSV o archivos de codigo.");
+}
+
+async function analizarArchivo(archivo, pregunta) {
+  const nombre = normalizarNombreArchivo(archivo?.nombre);
+  const ext = extensionArchivo(nombre);
+  const tipo = String(archivo?.tipo || extraerMimeDataUrl(archivo?.contenido) || "").toLowerCase();
+  const buffer = bufferDesdeContenido(archivo?.contenido);
+
+  if (!buffer.length) throw new Error("El archivo adjunto esta vacio.");
+  if (buffer.length > MAX_FILE_BYTES) {
+    throw new Error(`El archivo "${nombre}" supera el limite de ${Math.round(MAX_FILE_BYTES / 1024 / 1024)} MB.`);
+  }
+
+  if (esImagen(tipo, ext)) {
+    const observaciones = await analizarImagenConVision({ nombre, tipo, contenido: archivo.contenido }, pregunta);
+    return (
+      `[Imagen analizada: ${nombre}]\n` +
+      `Tipo: ${tipo || ext || "imagen"}\n` +
+      `Tamano aproximado: ${(buffer.length / 1024 / 1024).toFixed(2)} MB\n\n` +
+      `${observaciones}`
+    );
+  }
+
+  const texto = recortarTextoExtraido(await extraerTextoDocumento(buffer, tipo, ext));
+  if (!texto) throw new Error(`No pude extraer texto legible de "${nombre}".`);
+
+  return (
+    `[Documento analizado: ${nombre}]\n` +
+    `Tipo: ${tipo || ext || "documento"}\n` +
+    `Tamano aproximado: ${(buffer.length / 1024 / 1024).toFixed(2)} MB\n\n` +
+    "Contenido extraido:\n" +
+    "```\n" + texto + "\n```"
+  );
+}
+
+function contenidoComoTexto(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((item) => item?.text || "").filter(Boolean).join("\n");
+  }
+  return String(content || "");
+}
+
+function prepararMensajes(historial, modo) {
+  if (modo !== "razonamiento") return historial;
+
+  const instrucciones = contenidoComoTexto(historial[0]?.content || instruccionesCharvis()) +
+    " Modo razonamiento activo: piensa con mas cuidado antes de responder, valida supuestos y entrega solo la respuesta final. " +
+    "No muestres razonamiento interno ni cadenas de pensamiento.";
+
+  const mensajes = historial.slice(1).map((m) => ({ ...m, content: contenidoComoTexto(m.content) }));
+  const ultimoUsuario = [...mensajes].map((m, i) => ({ m, i })).reverse().find(({ m }) => m.role === "user");
+
+  if (ultimoUsuario) {
+    mensajes[ultimoUsuario.i] = {
+      ...mensajes[ultimoUsuario.i],
+      content: `${instrucciones}\n\n${mensajes[ultimoUsuario.i].content}`
+    };
+  } else {
+    mensajes.push({ role: "user", content: instrucciones });
+  }
+
+  return mensajes;
 }
 
 function elevenLabsTTS(text) {
@@ -95,14 +280,7 @@ function elevenLabsTTS(text) {
 }
 
 function crearHistorial() {
-  return [{
-    role: "system",
-    content:
-      "Sos Charvis, un asistente de IA avanzado, preciso y sofisticado, inspirado en JARVIS de Iron Man. " +
-      "Respondés con elegancia, inteligencia y una leve actitud británica. " +
-      "Usás español rioplatense. Sin listas ni markdown. Máximo 3 oraciones por respuesta. " +
-      "Cuando te envíen un archivo, analizalo a fondo y dá una respuesta útil sobre su contenido."
-  }];
+  return [{ role: "system", content: instruccionesCharvis() }];
 }
 
 wss.on("connection", (ws) => {
@@ -126,14 +304,24 @@ wss.on("connection", (ws) => {
     }
   }
 
-  async function procesarConLLM(historial) {
-    send({ type: "estado", valor: "pensando" });
-    const stream = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: historial,
-      max_tokens: 300,
+  async function procesarConLLM(historial, opciones = {}) {
+    const modo = modoValido(opciones.modo);
+    send({ type: "estado", valor: modo === "razonamiento" ? "razonando" : "pensando" });
+
+    const request = {
+      model: modo === "razonamiento" ? REASONING_MODEL : CHAT_MODEL,
+      messages: prepararMensajes(historial, modo),
+      max_completion_tokens: modo === "razonamiento" ? 900 : 420,
+      temperature: modo === "razonamiento" ? 0.45 : 0.65,
       stream: true,
-    });
+    };
+
+    if (modo === "razonamiento") {
+      request.reasoning_effort = "medium";
+      request.include_reasoning = false;
+    }
+
+    const stream = await groq.chat.completions.create(request);
 
     let respuestaCompleta = "";
     let bufferTexto = "";
@@ -205,22 +393,26 @@ wss.on("connection", (ws) => {
           if (procesando) return;
           procesando = true;
           try {
+            const modo = modoValido(msg.modo);
+            const textoUsuario = String(msg.texto || "").trim();
             let contenidoUsuario = "";
+
             if (msg.archivo) {
-              const { nombre, tipo, contenido } = msg.archivo;
-              if (tipo && tipo.startsWith("image/")) {
-                contenidoUsuario += `[El usuario adjuntó una imagen: "${nombre}"]\n\n`;
-              } else {
-                contenidoUsuario += `[Archivo adjunto: "${nombre}"]\n\`\`\`\n${contenido}\n\`\`\`\n\n`;
-              }
+              send({ type: "estado", valor: "analizandoArchivo" });
+              contenidoUsuario += await analizarArchivo(msg.archivo, textoUsuario);
+              contenidoUsuario += "\n\n";
             }
-            if (msg.texto) contenidoUsuario += msg.texto;
+
+            contenidoUsuario += textoUsuario || "Analiza el archivo adjunto y dame una respuesta util.";
             historial.push({ role: "user", content: contenidoUsuario });
             historial = recortarHistorial(historial);
-            await procesarConLLM(historial);
+            await procesarConLLM(historial, { modo });
+          } catch (err) {
+            send({ type: "error", mensaje: err.message });
           } finally {
             procesando = false;
           }
+          return;
         }
       } catch (_) {}
     }

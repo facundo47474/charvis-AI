@@ -14,44 +14,44 @@
     <div class="sidebar-top">
       <button id="btn-new-chat" class="sidebar-btn" onclick="limpiar()">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        <span>Nueva conversación</span>
+        <span>Nueva conversacion</span>
       </button>
     </div>
     <div class="sidebar-history" id="sidebar-history"></div>
     <div class="sidebar-bottom">
       <div class="sidebar-user">
-        <div class="user-avatar">U</div>
-        <span class="user-name">Usuario</span>
+        <div class="user-avatar">A</div>
+        <span class="user-name">Creador Arguello</span>
       </div>
     </div>
   </aside>
 
   <div id="main">
     <header id="topbar">
-      <button id="btn-sidebar-toggle" class="icon-btn" onclick="toggleSidebar()" title="Menú">
+      <button id="btn-sidebar-toggle" class="icon-btn" onclick="toggleSidebar()" title="Menu">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
 
-      <div id="model-selector">
-        <button id="model-btn" onclick="toggleModelDropdown()">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
-          <span id="model-name">Charvis 1.0 Beta</span>
-          <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        </button>
-        <div id="model-dropdown" class="dropdown hidden">
-          <div class="dropdown-item active" onclick="selectModel('Charvis 1.0 Beta')">
-            <div class="model-info">
-              <span class="model-item-name">Charvis 1.0 Beta</span>
-              <span class="model-item-desc">Modelo principal — rápido y conversacional</span>
-            </div>
-            <svg class="check-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-          </div>
+      <div id="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 4.3a3.2 3.2 0 0 0-3.2 3.2v.7a3.7 3.7 0 0 0 0 7.2v.8A3.2 3.2 0 0 0 9 19.5"/>
+            <path d="M15 4.3a3.2 3.2 0 0 1 3.2 3.2v.7a3.7 3.7 0 0 1 0 7.2v.8a3.2 3.2 0 0 1-3.2 3.2"/>
+            <path d="M9 7.5h6M8.8 12h6.4M9 16.5h6"/>
+          </svg>
+        </div>
+        <div>
+          <strong>Charvis</strong>
+          <span id="model-name">Modo normal</span>
         </div>
       </div>
 
       <div class="topbar-right">
-        <button id="btn-auto-speak" class="icon-btn active" onclick="toggleAutoSpeak()" title="Audio automático activado">
+        <button id="btn-auto-speak" class="icon-btn active" onclick="toggleAutoSpeak()" title="Audio automatico activado">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+        </button>
+        <button id="btn-stop-voice" class="icon-btn voice-stop hidden" onclick="detenerAudioLocal()" title="Detener voz de Charvis">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
         </button>
         <div id="conn-indicator">
           <span id="conn-dot"></span>
@@ -62,16 +62,23 @@
 
     <main id="chat">
       <div id="welcome-screen">
-        <div class="welcome-logo">C</div>
-        <h1 class="welcome-heading">¿En qué puedo ayudarte?</h1>
+        <div class="welcome-logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 4.3a3.2 3.2 0 0 0-3.2 3.2v.7a3.7 3.7 0 0 0 0 7.2v.8A3.2 3.2 0 0 0 9 19.5"/>
+            <path d="M15 4.3a3.2 3.2 0 0 1 3.2 3.2v.7a3.7 3.7 0 0 1 0 7.2v.8a3.2 3.2 0 0 1-3.2 3.2"/>
+            <path d="M9 7.5h6M8.8 12h6.4M9 16.5h6"/>
+          </svg>
+        </div>
+        <p class="welcome-greeting">Hola</p>
+        <h1 class="welcome-heading">En que puedo ayudarte?</h1>
         <div class="welcome-grid">
-          <button class="suggestion-card" onclick="insertSuggestion('Explicame qué podés hacer')">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            <span>Explicame qué podés hacer</span>
+          <button class="suggestion-card" onclick="insertSuggestion('Analiza este documento y resumime los puntos clave')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>Analizar un documento</span>
           </button>
-          <button class="suggestion-card" onclick="insertSuggestion('Ayudame a escribir un email profesional')">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-            <span>Ayudame a escribir un email</span>
+          <button class="suggestion-card" onclick="insertSuggestion('Mira esta foto y decime que informacion importante ves')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+            <span>Leer una foto</span>
           </button>
         </div>
       </div>
@@ -80,26 +87,44 @@
     <div id="input-section">
       <div id="file-preview" class="hidden">
         <div class="file-chip">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <svg class="file-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
           <span id="file-name"></span>
-          <button class="file-remove-btn" onclick="removeFile()">✕</button>
+          <small id="file-meta"></small>
+          <button class="file-remove-btn" onclick="removeFile()">x</button>
         </div>
       </div>
 
       <div id="input-box">
-        <button id="btn-attach" class="input-icon-btn" onclick="document.getElementById('file-input').click()">
+        <button id="btn-attach" class="input-icon-btn" onclick="document.getElementById('file-input').click()" title="Adjuntar archivo">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
-        <input type="file" id="file-input" hidden/>
-        <textarea id="text-input" placeholder="Enviá un mensaje a Charvis..." rows="1" onkeydown="handleKeyDown(event)" oninput="autoResize(this)"></textarea>
-        <button id="btn-mic" class="input-icon-btn" onclick="toggleMic()">
+        <input type="file" id="file-input" accept=".txt,.md,.csv,.json,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.cs,.go,.rs,.php,.rb,.sql,.yaml,.yml,.log,.pdf,.docx,image/png,image/jpeg,image/webp,image/gif" hidden/>
+        <div id="mode-switcher" class="mode-select">
+          <button id="mode-current" class="mode-current" type="button" onclick="toggleModeMenu()" aria-haspopup="true" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 4a3 3 0 0 0-3 3v1a4 4 0 0 0 0 8v1a3 3 0 0 0 3 3"/><path d="M15 4a3 3 0 0 1 3 3v1a4 4 0 0 1 0 8v1a3 3 0 0 1-3 3"/><path d="M9 8h6M9 12h6M9 16h6"/></svg>
+            <span id="mode-current-label">Normal</span>
+            <svg class="mode-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div id="mode-menu" class="mode-menu hidden">
+            <button class="mode-option active" type="button" data-mode="normal" onclick="selectModel('normal')">
+              <span>Normal</span>
+              <small>Respuestas rapidas y naturales</small>
+            </button>
+            <button class="mode-option" type="button" data-mode="razonamiento" onclick="selectModel('razonamiento')">
+              <span>Razonamiento</span>
+              <small>Analiza con mas profundidad</small>
+            </button>
+          </div>
+        </div>
+        <textarea id="text-input" placeholder="Envia un mensaje o adjunta un archivo..." rows="1" onkeydown="handleKeyDown(event)" oninput="autoResize(this)"></textarea>
+        <button id="btn-mic" class="input-icon-btn" onclick="toggleMic()" title="Microfono">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="1" width="6" height="11" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
         </button>
-        <button id="btn-send" class="send-btn hidden" onclick="enviarTexto()">
+        <button id="btn-send" class="send-btn hidden" onclick="enviarTexto()" title="Enviar">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </button>
       </div>
-      <p class="input-disclaimer">Charvis 1.0 Beta puede cometer errores. Verificá la información importante.</p>
+      <p class="input-disclaimer">Charvis puede cometer errores. Verifica la informacion importante.</p>
     </div>
   </div>
   <script src="app.js"></script>
