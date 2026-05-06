@@ -227,6 +227,8 @@ wss.on("connection", (ws) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`CHARVIS corriendo en http://localhost:${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`\n🚀 CHARVIS ONLINE`);
+  console.log(`🌍 Puerto: ${PORT}`);
+  console.log(`🔧 Modo: ${process.env.NODE_ENV || 'development'}\n`);
 });
