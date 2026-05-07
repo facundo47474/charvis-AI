@@ -11,7 +11,10 @@ let autoSpeak = true;
 let micListening = false;
 let isCharvisHablando = false;
 let chatMode = "normal";
-let conversationCount = 1;
+let conversationCount = 0;
+let conversaciones = [];
+let activeConversationId = null;
+let renderizandoConversacion = false;
 let audioOutputActive = false;
 let micResumeAt = 0;
 
@@ -96,9 +99,81 @@ function handleEstado(valor) {
   }
 }
 
-function toggleSidebar() {
-  document.getElementById("sidebar").classList.toggle("collapsed");
+function esModoMobileSidebar() {
+  return window.matchMedia("(max-width: 768px)").matches;
 }
+
+function abrirSidebar() {
+  const sidebar = document.getElementById("sidebar");
+  const backdrop = document.getElementById("sidebar-backdrop");
+
+  if (sidebar) {
+    sidebar.classList.add("open");
+  }
+
+  /*
+    El fondo oscuro solo se activa en móvil.
+    En PC no debe aparecer ni bloquear la pantalla.
+  */
+  if (backdrop && esModoMobileSidebar()) {
+    backdrop.classList.add("show");
+  }
+
+  if (esModoMobileSidebar()) {
+    document.body.classList.add("sidebar-open");
+  }
+}
+
+function cerrarSidebar() {
+  const sidebar = document.getElementById("sidebar");
+  const backdrop = document.getElementById("sidebar-backdrop");
+
+  if (sidebar) {
+    sidebar.classList.remove("open");
+  }
+
+  if (backdrop) {
+    backdrop.classList.remove("show");
+  }
+
+  document.body.classList.remove("sidebar-open");
+}
+
+function cerrarSidebarEnMovil() {
+  /*
+    Desactivado intencionalmente.
+    El menú solo debe cerrarse cuando el usuario presiona la X
+    o vuelve a presionar el botón hamburguesa.
+  */
+}
+
+function toggleSidebar() {
+  const sidebar = document.getElementById("sidebar");
+
+  if (!sidebar) return;
+
+  if (sidebar.classList.contains("open")) {
+    cerrarSidebar();
+  } else {
+    abrirSidebar();
+  }
+}
+
+window.addEventListener("resize", () => {
+  const backdrop = document.getElementById("sidebar-backdrop");
+
+  /*
+    Si el usuario pasa de móvil a PC, eliminamos el fondo oscuro.
+    Esto evita que en PC quede la pantalla bloqueada.
+  */
+  if (!esModoMobileSidebar()) {
+    if (backdrop) {
+      backdrop.classList.remove("show");
+    }
+
+    document.body.classList.remove("sidebar-open");
+  }
+});
 
 function toggleModelDropdown() {
   document.getElementById("model-dropdown")?.classList.toggle("hidden");
@@ -145,6 +220,133 @@ function toggleAutoSpeak() {
 
 function removeWelcome() {
   document.getElementById("welcome-screen")?.remove();
+}
+
+function obtenerWelcomeHTML() {
+  return `
+    <div id="welcome-screen">
+      <div class="welcome-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 4.3a3.2 3.2 0 0 0-3.2 3.2v.7a3.7 3.7 0 0 0 0 7.2v.8A3.2 3.2 0 0 0 9 19.5"/>
+          <path d="M15 4.3a3.2 3.2 0 0 1 3.2 3.2v.7a3.7 3.7 0 0 1 0 7.2v.8a3.2 3.2 0 0 1-3.2 3.2"/>
+          <path d="M9 7.5h6M8.8 12h6.4M9 16.5h6"/>
+        </svg>
+      </div>
+      <p class="welcome-greeting">Hola</p>
+      <h1 class="welcome-heading">En que puedo ayudarte?</h1>
+      <div class="welcome-grid">
+        <button class="suggestion-card" onclick="insertSuggestion('Analiza este documento y resumime los puntos clave')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <span>Analizar un documento</span>
+        </button>
+        <button class="suggestion-card" onclick="insertSuggestion('Mira esta foto y decime que informacion importante ves')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <path d="M21 15l-5-5L5 21"/>
+          </svg>
+          <span>Leer una foto</span>
+        </button>
+      </div>
+    </div>`;
+}
+
+function crearConversacion(nombre = null) {
+  conversationCount += 1;
+
+  const conversacion = {
+    id: `conv-${Date.now()}-${conversationCount}`,
+    titulo: nombre || `Conversacion ${conversationCount}`,
+    mensajes: []
+  };
+
+  conversaciones.push(conversacion);
+  return conversacion;
+}
+
+function obtenerConversacionActiva() {
+  return conversaciones.find((conv) => conv.id === activeConversationId) || null;
+}
+
+function guardarMensajeEnConversacion(mensaje) {
+  if (renderizandoConversacion) return;
+
+  const conversacion = obtenerConversacionActiva();
+  if (!conversacion) return;
+
+  conversacion.mensajes.push(mensaje);
+
+  // Si es el primer mensaje del usuario, usarlo como título corto.
+  if (
+    mensaje.tipo === "mensaje" &&
+    mensaje.rol === "usuario" &&
+    conversacion.titulo.startsWith("Conversacion")
+  ) {
+    const titulo = String(mensaje.texto || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 34);
+
+    if (titulo) conversacion.titulo = titulo.length >= 34 ? `${titulo}...` : titulo;
+  }
+
+  actualizarSidebarConversaciones();
+}
+
+function actualizarSidebarConversaciones() {
+  const sidebar = document.getElementById("sidebar-history");
+  if (!sidebar) return;
+
+  sidebar.innerHTML = "";
+
+  conversaciones.forEach((conversacion) => {
+    const button = document.createElement("button");
+    button.className = "history-item";
+    button.classList.toggle("active", conversacion.id === activeConversationId);
+    button.textContent = conversacion.titulo;
+    button.onclick = () => seleccionarConversacion(conversacion.id);
+
+    sidebar.appendChild(button);
+  });
+}
+
+function renderizarConversacion(conversacion) {
+  const chat = document.getElementById("chat");
+  if (!chat) return;
+
+  removeThinking();
+  chat.innerHTML = conversacion.mensajes.length ? "" : obtenerWelcomeHTML();
+
+  renderizandoConversacion = true;
+
+  conversacion.mensajes.forEach((mensaje) => {
+    if (mensaje.tipo === "error") {
+      agregarError(mensaje.texto);
+      return;
+    }
+
+    agregarMensaje(mensaje.rol, mensaje.texto);
+  });
+
+  renderizandoConversacion = false;
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function seleccionarConversacion(conversacionId) {
+  const conversacion = conversaciones.find((conv) => conv.id === conversacionId);
+  if (!conversacion) return;
+
+  detenerAudioLocal();
+  removeFile();
+
+  activeConversationId = conversacion.id;
+
+  actualizarSidebarConversaciones();
+  renderizarConversacion(conversacion);
+  actualizarTituloConversacion();
 }
 
 function estaCercaDelFinal(chat) {
@@ -277,6 +479,12 @@ function agregarMensaje(rol, texto) {
   } else if (shouldStickToBottom) {
     chat.scrollTop = chat.scrollHeight;
   }
+
+  guardarMensajeEnConversacion({
+    tipo: "mensaje",
+    rol,
+    texto
+  });
 }
 
 function agregarError(texto) {
@@ -288,6 +496,11 @@ function agregarError(texto) {
   div.textContent = texto || "Ocurrio un error.";
   chat.appendChild(div);
   if (shouldStickToBottom) chat.scrollTop = chat.scrollHeight;
+
+  guardarMensajeEnConversacion({
+    tipo: "error",
+    texto
+  });
 }
 
 function showThinking(label = "Pensando") {
@@ -422,6 +635,31 @@ function insertSuggestion(texto) {
   input.value = texto;
   autoResize(input);
   input.focus();
+}
+
+function nuevaConversacion() {
+  const nueva = crearConversacion();
+
+  activeConversationId = nueva.id;
+
+  const chat = document.getElementById("chat");
+
+  if (chat) {
+    chat.innerHTML = obtenerWelcomeHTML();
+  }
+
+  actualizarSidebarConversaciones();
+  actualizarTituloConversacion();
+}
+
+function iniciarConversaciones() {
+  if (conversaciones.length > 0) return;
+
+  const primeraConversacion = crearConversacion("Conversacion 1");
+  activeConversationId = primeraConversacion.id;
+
+  actualizarSidebarConversaciones();
+  actualizarTituloConversacion();
 }
 
 function limpiar() {
@@ -656,3 +894,16 @@ function detenerGrabacion(descartar = false) {
   discardRecording = descartar;
   if (mediaRecorder.state === "recording") mediaRecorder.stop();
 }
+
+function actualizarTituloConversacion() {
+  const title = document.getElementById("active-conversation-title");
+  const conversacion = obtenerConversacionActiva();
+
+  if (!title || !conversacion) return;
+
+  title.textContent = conversacion.titulo;
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  iniciarConversaciones();
+});

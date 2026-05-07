@@ -12,11 +12,22 @@
 <body>
   <aside id="sidebar">
     <div class="sidebar-top">
-      <button id="btn-new-chat" class="sidebar-btn" onclick="limpiar()">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        <span>Nueva conversacion</span>
-      </button>
-    </div>
+  <button id="btn-new-chat" class="sidebar-btn" onclick="nuevaConversacion()">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="12" y1="5" x2="12" y2="19"/>
+      <line x1="5" y1="12" x2="19" y2="12"/>
+    </svg>
+    <span>Nueva conversacion</span>
+  </button>
+
+  <button id="btn-sidebar-close" class="sidebar-close-btn" onclick="cerrarSidebar()" title="Cerrar menu">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="18" y1="6" x2="6" y2="18"/>
+      <line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
+  </button>
+</div>
+    <div class="sidebar-section-title">Conversaciones</div>
     <div class="sidebar-history" id="sidebar-history"></div>
     <div class="sidebar-bottom">
       <div class="sidebar-user">
@@ -25,6 +36,8 @@
       </div>
     </div>
   </aside>
+
+  <div id="sidebar-backdrop" aria-hidden="true"></div>
 
   <div id="main">
     <header id="topbar">
