@@ -2,6 +2,9 @@ const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.
 const MAX_CLIENT_FILE_BYTES = 12 * 1024 * 1024;
 const MIC_RESUME_DELAY_MS = 1200;
 
+// Configurar marked: soporte de tablas GFM y saltos de línea automáticos
+marked.use({ breaks: true, gfm: true });
+
 let ws = null;
 let wsReady = false;
 let autoSpeak = true;
@@ -227,7 +230,7 @@ function renderizarContenidoMensaje(container, texto) {
   const { cleanText, charts } = extraerBloquesGraficos(texto);
   const text = document.createElement("div");
   text.className = "msg-text";
-  text.textContent = cleanText || texto || "";
+  text.innerHTML = marked.parse(cleanText || texto || "");
   container.appendChild(text);
 
   charts.forEach((chart) => {

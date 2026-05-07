@@ -8,59 +8,58 @@ const https      = require("https");
 const Groq       = require("groq-sdk");
 const pdfParse   = require("pdf-parse");
 const mammoth    = require("mammoth");
+const crypto     = require("crypto");
+
+const { recortarHistorial } = require("./historial");
+const { esEco } = require("./eco");
 
 if (!process.env.GROQ_API_KEY) throw new Error("Falta GROQ_API_KEY en .env");
+if (process.env.GROQ_API_KEY.includes("xxxxxxxx")) {
+  console.warn("⚠️ ALERTA: Estás usando la API Key de ejemplo en el archivo .env.");
+  console.warn("Por favor, reemplázala por tu llave real de https://console.groq.com/keys");
+}
 
 const groq          = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY || "";
 const VOICE_ID      = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
 const PORT          = process.env.PORT || 3000;
 const CHAT_MODEL    = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
-const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "openai/gpt-oss-120b";
-const VISION_MODEL  = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
-
-const MAX_HISTORIAL = 40;
-const MAX_FILE_BYTES = 12 * 1024 * 1024;
+const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "deepseek-r1-distill-llama-70b";
+const VISION_MODEL  = process.env.GROQ_VISION_MODEL || "llama-3.2-11b-vision-preview";
+const APP_USER      = process.env.APP_USER || "admin";
+const APP_PASSWORD  = process.env.APP_PASSWORD || "facu";
 const MAX_EXTRACTED_CHARS = 60000;
+const MAX_EXTRACTED_CHARS_REASONING = 12000; // ~3000 tokens, deja margen
+const MAX_FILE_BYTES = 12 * 1024 * 1024;
 
 const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocketServer({ server });
 
+// Middleware de autenticación simple
+const authMiddleware = (req, res, next) => {
+  if (!APP_PASSWORD) return next(); // Si no hay password configurado, permitir acceso
+
+  const authHeader = req.headers.authorization || "";
+  const [type, credentials] = authHeader.split(" ");
+
+  if (type === "Basic") {
+    const [user, pass] = Buffer.from(credentials, "base64").toString().split(":");
+    if (user === APP_USER && pass === APP_PASSWORD) {
+      return next();
+    }
+  }
+
+  res.setHeader("WWW-Authenticate", 'Basic realm="Charvis Private"');
+  res.status(401).send("Acceso restringido. Por favor, identifícate.");
+};
+
+app.use(authMiddleware);
 app.use(express.static(path.join(__dirname, "www")));
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: Date.now() });
 });
-
-function normalizar(s) {
-  return String(s || "").toLowerCase()
-    .normalize("NFD").replace(/\p{M}/gu, "")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ").trim();
-}
-
-function esEco(transcripcion, ultimoAsistente) {
-  const t = normalizar(transcripcion);
-  const a = normalizar(ultimoAsistente);
-  if (t.length < 2 || a.length < 4) return false;
-  if (a.includes(t) && t.length >= 3) return true;
-  const palabras = t.split(" ").filter(w => w.length > 1);
-  if (palabras.length === 0) return false;
-  const enA = palabras.filter(w => a.includes(w)).length;
-  if (palabras.length <= 5 && enA === palabras.length) return true;
-  if (palabras.length > 5  && enA / palabras.length >= 0.52) return true;
-  return false;
-}
-
-function recortarHistorial(historial) {
-  if (historial.length > MAX_HISTORIAL + 1) {
-    const system = historial[0];
-    historial = [system, ...historial.slice(-(MAX_HISTORIAL))];
-  }
-  return historial;
-}
-
 function instruccionesCharvis() {
   return (
     "Sos Charvis, un asistente de IA avanzado, preciso y sofisticado, inspirado en JARVIS de Iron Man. " +
@@ -103,10 +102,10 @@ function bufferDesdeContenido(contenido) {
   return Buffer.from(texto, "utf8");
 }
 
-function recortarTextoExtraido(texto) {
+function recortarTextoExtraido(texto, limite = MAX_EXTRACTED_CHARS) {
   const limpio = String(texto || "").replace(/\u0000/g, "").replace(/[ \t]+\n/g, "\n").trim();
-  if (limpio.length <= MAX_EXTRACTED_CHARS) return limpio;
-  return limpio.slice(0, MAX_EXTRACTED_CHARS) + "\n\n[Texto recortado por seguridad: el archivo es mas largo.]";
+  if (limpio.length <= limite) return limpio;
+  return limpio.slice(0, limite) + "\n\n[Texto recortado por seguridad: el archivo es mas largo.]";
 }
 
 function esImagen(tipo, ext) {
@@ -151,7 +150,7 @@ async function analizarImagenConVision({ nombre, tipo, contenido }, pregunta) {
       ]
     }],
     temperature: 0.2,
-    max_completion_tokens: 900,
+    max_tokens: 900,
     stream: false
   });
 
@@ -176,7 +175,7 @@ async function extraerTextoDocumento(buffer, tipo, ext) {
   throw new Error("Formato no soportado todavia. Usa imagenes, PDF, DOCX, TXT, Markdown, JSON, CSV o archivos de codigo.");
 }
 
-async function analizarArchivo(archivo, pregunta) {
+async function analizarArchivo(archivo, pregunta, modo = "normal") {
   const nombre = normalizarNombreArchivo(archivo?.nombre);
   const ext = extensionArchivo(nombre);
   const tipo = String(archivo?.tipo || extraerMimeDataUrl(archivo?.contenido) || "").toLowerCase();
@@ -197,7 +196,8 @@ async function analizarArchivo(archivo, pregunta) {
     );
   }
 
-  const texto = recortarTextoExtraido(await extraerTextoDocumento(buffer, tipo, ext));
+  const limite = modo === "razonamiento" ? 6000 : MAX_EXTRACTED_CHARS;
+  const texto = recortarTextoExtraido(await extraerTextoDocumento(buffer, tipo, ext), limite);
   if (!texto) throw new Error(`No pude extraer texto legible de "${nombre}".`);
 
   return (
@@ -208,7 +208,6 @@ async function analizarArchivo(archivo, pregunta) {
     "```\n" + texto + "\n```"
   );
 }
-
 function contenidoComoTexto(content) {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -220,21 +219,26 @@ function contenidoComoTexto(content) {
 function prepararMensajes(historial, modo) {
   if (modo !== "razonamiento") return historial;
 
-  const instrucciones = contenidoComoTexto(historial[0]?.content || instruccionesCharvis()) +
-    " Modo razonamiento activo: piensa con mas cuidado antes de responder, valida supuestos y entrega solo la respuesta final. " +
-    "No muestres razonamiento interno ni cadenas de pensamiento.";
+  const sistemaBase = contenidoComoTexto(historial[0]?.content || instruccionesCharvis());
+  const sistemaRazonamiento = sistemaBase + "\n\n" +
+    "=== MODO RAZONAMIENTO PROFUNDO ACTIVADO ===\n" +
+    "Reasoning: high\n\n" +
+    "Antes de responder, aplica el siguiente proceso interno:\n" +
+    "1. DESCOMPOSICION: Divide el problema en subproblemas concretos.\n" +
+    "2. SUPUESTOS: Lista todos los supuestos implicitos. Cuestiona cada uno.\n" +
+    "3. PERSPECTIVAS: Considera al menos dos enfoques distintos para resolverlo.\n" +
+    "4. VALIDACION: Verifica tu razonamiento paso a paso. Detecta contradicciones.\n" +
+    "5. SINTESIS: Construye la respuesta final solo con lo que puedas sostener.\n\n" +
+    "Entrega UNICAMENTE la respuesta final: clara, precisa y fundamentada. " +
+    "Sin mencionar el proceso interno. Sin frases introductorias vagas. " +
+    "Si el problema involucra codigo, incluye el codigo completo y funcional. " +
+    "Si involucra datos numericos, muestra los calculos. " +
+    "Si hay incertidumbre real, indicala con precision.";
 
-  const mensajes = historial.slice(1).map((m) => ({ ...m, content: contenidoComoTexto(m.content) }));
-  const ultimoUsuario = [...mensajes].map((m, i) => ({ m, i })).reverse().find(({ m }) => m.role === "user");
-
-  if (ultimoUsuario) {
-    mensajes[ultimoUsuario.i] = {
-      ...mensajes[ultimoUsuario.i],
-      content: `${instrucciones}\n\n${mensajes[ultimoUsuario.i].content}`
-    };
-  } else {
-    mensajes.push({ role: "user", content: instrucciones });
-  }
+  const mensajes = [
+    { role: "system", content: sistemaRazonamiento },
+    ...historial.slice(1).map((m) => ({ ...m, content: contenidoComoTexto(m.content) }))
+  ];
 
   return mensajes;
 }
@@ -245,16 +249,12 @@ function elevenLabsTTS(text) {
     const body = JSON.stringify({
       text,
       model_id: "eleven_multilingual_v2",
-      voice_settings: {
-        stability: 0.50,
-        similarity_boost: 0.85,
-        style: 0.20,
-        use_speaker_boost: true
-      }
+      voice_settings: { stability: 0.50, similarity_boost: 0.85, style: 0.20, use_speaker_boost: true },
+      optimize_streaming_latency: 3  // 0-4, mayor = menor latencia
     });
     const options = {
       hostname: "api.elevenlabs.io",
-      path: `/v1/text-to-speech/${VOICE_ID}`,
+      path: `/v1/text-to-speech/${VOICE_ID}/stream`,  // <-- /stream
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -265,8 +265,7 @@ function elevenLabsTTS(text) {
     const chunks = [];
     const req = https.request(options, (res) => {
       if (res.statusCode !== 200) {
-        let e = "";
-        res.on("data", d => e += d);
+        let e = ""; res.on("data", d => e += d);
         res.on("end", () => reject(new Error(`ElevenLabs ${res.statusCode}: ${e}`)));
         return;
       }
@@ -274,8 +273,7 @@ function elevenLabsTTS(text) {
       res.on("end", () => resolve(Buffer.concat(chunks)));
     });
     req.on("error", reject);
-    req.write(body);
-    req.end();
+    req.write(body); req.end();
   });
 }
 
@@ -283,7 +281,24 @@ function crearHistorial() {
   return [{ role: "system", content: instruccionesCharvis() }];
 }
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  // Doble verificación para el WebSocket
+  if (APP_PASSWORD) {
+    const authHeader = req.headers.authorization || "";
+    const [type, credentials] = authHeader.split(" ");
+    let authorized = false;
+
+    if (type === "Basic") {
+      const [user, pass] = Buffer.from(credentials, "base64").toString().split(":");
+      if (user === APP_USER && pass === APP_PASSWORD) authorized = true;
+    }
+
+    if (!authorized) {
+      ws.close(1008, "No autorizado");
+      return;
+    }
+  }
+
   let historial   = crearHistorial();
   let procesando  = false;
 
@@ -311,13 +326,13 @@ wss.on("connection", (ws) => {
     const request = {
       model: modo === "razonamiento" ? REASONING_MODEL : CHAT_MODEL,
       messages: prepararMensajes(historial, modo),
-      max_completion_tokens: modo === "razonamiento" ? 900 : 420,
-      temperature: modo === "razonamiento" ? 0.45 : 0.65,
+      max_completion_tokens: modo === "razonamiento" ? 5000 : 420,
+      temperature: modo === "razonamiento" ? 0.6 : 0.65,
       stream: true,
     };
 
     if (modo === "razonamiento") {
-      request.reasoning_effort = "medium";
+      request.reasoning_effort = "high";
       request.include_reasoning = false;
     }
 
@@ -351,7 +366,7 @@ wss.on("connection", (ws) => {
     if (isBinary) {
       if (procesando) return;
       procesando = true;
-      const tmpFile = path.join(__dirname, `tmp_${Date.now()}.webm`);
+      const tmpFile = path.join(__dirname, `tmp_${crypto.randomUUID()}.webm`);
       try {
         send({ type: "estado", valor: "transcribiendo" });
         fs.writeFileSync(tmpFile, data);
@@ -375,6 +390,11 @@ wss.on("connection", (ws) => {
         historial = recortarHistorial(historial);
         await procesarConLLM(historial);
       } catch (err) {
+        console.error("[GROQ ERROR]", err);
+        if (err.status === 401) {
+          send({ type: "error", mensaje: "Error de autenticación: Tu GROQ_API_KEY es inválida o expiró." });
+          return;
+        }
         send({ type: "error", mensaje: err.message });
       } finally {
         if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
@@ -399,7 +419,7 @@ wss.on("connection", (ws) => {
 
             if (msg.archivo) {
               send({ type: "estado", valor: "analizandoArchivo" });
-              contenidoUsuario += await analizarArchivo(msg.archivo, textoUsuario);
+              contenidoUsuario += await analizarArchivo(msg.archivo, textoUsuario, modo);
               contenidoUsuario += "\n\n";
             }
 
@@ -408,6 +428,11 @@ wss.on("connection", (ws) => {
             historial = recortarHistorial(historial);
             await procesarConLLM(historial, { modo });
           } catch (err) {
+            console.error("[GROQ ERROR]", err);
+            if (err.status === 401) {
+              send({ type: "error", mensaje: "Error de autenticación: Tu GROQ_API_KEY es inválida." });
+              return;
+            }
             send({ type: "error", mensaje: err.message });
           } finally {
             procesando = false;
