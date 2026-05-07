@@ -5,31 +5,55 @@ const http       = require("http");
 const path       = require("path");
 const fs         = require("fs");
 const https      = require("https");
-const Groq       = require("groq-sdk");
-const pdfParse   = require("pdf-parse");
-const mammoth    = require("mammoth");
 const crypto     = require("crypto");
 
 const { recortarHistorial } = require("./historial");
 const { esEco } = require("./eco");
 
 if (!process.env.GROQ_API_KEY) throw new Error("Falta GROQ_API_KEY en .env");
-if (process.env.GROQ_API_KEY.includes("xxxxxxxx")) {
-  console.warn("⚠️ ALERTA: Estás usando la API Key de ejemplo en el archivo .env.");
-  console.warn("Por favor, reemplázala por tu llave real de https://console.groq.com/keys");
-}
 
-const groq          = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const GROQ_KEY = process.env.GROQ_API_KEY;
+
+// Verificar que la clave de Groq sea válida al iniciar
+async function verificarClaveGroq() {
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/models", {
+      method: "GET",
+      headers: {
+        "Authorization": "Bearer " + GROQ_KEY,
+        "Content-Type": "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        console.error("\n❌ ERROR: La GROQ_API_KEY no es válida.");
+        console.error("💡 Soluciones:");
+        console.error("   1. Ve a https://console.groq.com/keys");
+        console.error("   2. Crea una nueva API key o verifica una existente");
+        console.error("   3. Actualiza GROQ_API_KEY en el archivo .env");
+        console.error("\n🚫 El servidor no puede continuar sin una clave válida.\n");
+        process.exit(1);
+      } else {
+        console.warn(`⚠️  Advertencia: No se pudo verificar la clave de Groq (${response.status})`);
+      }
+    } else {
+      console.log("✅ GROQ_API_KEY verificada correctamente");
+    }
+  } catch (error) {
+    console.warn("⚠️  No se pudo verificar la clave de Groq:", error.message);
+  }
+}
 const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY || "";
 const VOICE_ID      = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
 const PORT          = process.env.PORT || 3000;
 const CHAT_MODEL    = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
-const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "deepseek-r1-distill-llama-70b";
-const VISION_MODEL  = process.env.GROQ_VISION_MODEL || "llama-3.2-11b-vision-preview";
+const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "openai/gpt-oss-120b";
+const VISION_MODEL  = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
 const APP_USER      = process.env.APP_USER || "admin";
 const APP_PASSWORD  = process.env.APP_PASSWORD || "facu";
 const MAX_EXTRACTED_CHARS = 60000;
-const MAX_EXTRACTED_CHARS_REASONING = 12000; // ~3000 tokens, deja margen
+const MAX_EXTRACTED_CHARS_REASONING = 24000;
 const MAX_FILE_BYTES = 12 * 1024 * 1024;
 
 const app    = express();
@@ -135,26 +159,41 @@ async function analizarImagenConVision({ nombre, tipo, contenido }, pregunta) {
     ? contenido
     : `data:${tipo || "image/png"};base64,${bufferDesdeContenido(contenido).toString("base64")}`;
 
-  const completion = await groq.chat.completions.create({
-    model: VISION_MODEL,
-    messages: [{
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text:
-            "Analiza esta imagen para Charvis. Extrae objetos, escena, texto visible, datos utiles y cualquier detalle relevante. " +
-            `Nombre del archivo: ${nombre}. Pedido del usuario: ${pregunta || "Analiza la imagen."}`
-        },
-        { type: "image_url", image_url: { url: dataUrl } }
-      ]
-    }],
-    temperature: 0.2,
-    max_tokens: 900,
-    stream: false
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + GROQ_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: VISION_MODEL,
+      messages: [{
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              "Analiza esta imagen para Charvis. Extrae objetos, escena, texto visible, datos utiles y cualquier detalle relevante. " +
+              `Nombre del archivo: ${nombre}. Pedido del usuario: ${pregunta || "Analiza la imagen."}`
+          },
+          { type: "image_url", image_url: { url: dataUrl } }
+        ]
+      }],
+      temperature: 0.2,
+      max_tokens: 900,
+      stream: false
+    })
   });
 
-  return completion.choices[0]?.message?.content?.trim() || "No se pudo obtener una descripcion visual.";
+  if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error(`Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env`);
+    }
+    throw new Error(`Vision error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content?.trim() || "No se pudo obtener una descripcion visual.";
 }
 
 async function extraerTextoDocumento(buffer, tipo, ext) {
@@ -196,7 +235,9 @@ async function analizarArchivo(archivo, pregunta, modo = "normal") {
     );
   }
 
-  const limite = modo === "razonamiento" ? 6000 : MAX_EXTRACTED_CHARS;
+  const limite = modo === "razonamiento"
+    ? MAX_EXTRACTED_CHARS_REASONING
+    : MAX_EXTRACTED_CHARS;
   const texto = recortarTextoExtraido(await extraerTextoDocumento(buffer, tipo, ext), limite);
   if (!texto) throw new Error(`No pude extraer texto legible de "${nombre}".`);
 
@@ -299,8 +340,37 @@ wss.on("connection", (ws, req) => {
     }
   }
 
-  let historial   = crearHistorial();
-  let procesando  = false;
+  const historiales = new Map();
+  const procesandoPorConversacion = new Set();
+  let conversationIdActivo = "default";
+
+  function obtenerConversationId(msg = {}) {
+    return String(msg.conversationId || "default").slice(0, 120);
+  }
+
+  function obtenerHistorial(conversationId) {
+    if (!historiales.has(conversationId)) {
+      historiales.set(conversationId, crearHistorial());
+    }
+
+    return historiales.get(conversationId);
+  }
+
+  function guardarHistorial(conversationId, historial) {
+    historiales.set(conversationId, recortarHistorial(historial));
+  }
+
+  function estaProcesando(conversationId) {
+    return procesandoPorConversacion.has(conversationId);
+  }
+
+  function iniciarProcesamiento(conversationId) {
+    procesandoPorConversacion.add(conversationId);
+  }
+
+  function finalizarProcesamiento(conversationId) {
+    procesandoPorConversacion.delete(conversationId);
+  }
 
   function send(obj) {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
@@ -319,56 +389,250 @@ wss.on("connection", (ws, req) => {
     }
   }
 
-  async function procesarConLLM(historial, opciones = {}) {
+  async function procesarConLLM(conversationId, historial, opciones = {}) {
     const modo = modoValido(opciones.modo);
-    send({ type: "estado", valor: modo === "razonamiento" ? "razonando" : "pensando" });
+
+    // Detector de complejidad
+    const ultimoMensajeUsuario = historial.filter(m => m.role === "user").pop()?.content || "";
+    const esComplejo = detectarComplejidad(ultimoMensajeUsuario) && modo === "razonamiento";
+
+    if (!esComplejo) {
+      // Flujo normal directo
+      return await ejecutarLLMDirecto(conversationId, historial, opciones);
+    }
+
+    // PIPELINE DE RAZONAMIENTO
+    try {
+      // 1. PLANNER
+      send({type: "estado", valor: "entendiendo_problema", conversationId});
+      const plan = await llamadaPlanner(ultimoMensajeUsuario);
+
+      send({type: "estado", valor: "creando_plan", conversationId});
+
+      // 2. EXECUTOR
+      send({type: "estado", valor: "ejecutando_plan", conversationId});
+      const respuestaPreliminar = await llamadaExecutor(ultimoMensajeUsuario, plan);
+
+      // 3. REVIEWER
+      send({type: "estado", valor: "verificando_respuesta", conversationId});
+      const respuestaFinal = await llamadaReviewer(respuestaPreliminar, ultimoMensajeUsuario);
+
+      // 4. ENVIAR AL USUARIO
+      send({type: "estado", valor: "finalizado", conversationId});
+      send({type: "mensaje", rol: "charvis", texto: respuestaFinal, conversationId});
+
+      // Guardar en historial
+      historial.push({role: "assistant", content: respuestaFinal});
+      guardarHistorial(conversationId, historial);
+
+    } catch (error) {
+      send({type: "error", texto: "Error en el proceso de razonamiento: " + error.message, conversationId});
+    }
+  }
+
+  function detectarComplejidad(texto) {
+    if (!texto || texto.split(/\s+/).length < 15) return false;
+    const clave = /analiza|corrige todo|compara|razona|paso a paso|proyecto|refactoriza|debug|investiga|sumariza|documento|archivo|optimiza|explica completo|revisa todo/i;
+    return clave.test(texto);
+  }
+
+  async function llamadaPlanner(mensajeUsuario) {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + GROQ_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: REASONING_MODEL,
+        messages: [
+          {role: "system", content: "Eres un planificador experto. Analiza la tarea del usuario y genera un plan de máximo 5 pasos concretos numerados. Sé técnico y breve. NO respondas la pregunta todavía, solo el plan."},
+          {role: "user", content: mensajeUsuario}
+        ],
+        max_tokens: 1500,
+        temperature: 0.3
+      })
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error(`Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env`);
+      }
+      throw new Error(`Planner error: ${response.status}`);
+    }
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || "1. Analizar solicitud\n2. Proporcionar respuesta detallada";
+  }
+
+  async function llamadaExecutor(mensajeUsuario, plan) {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + GROQ_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: REASONING_MODEL,
+        messages: [
+          {role: "system", content: "Eres un ejecutor experto. Sigue estrictamente el plan proporcionado paso a paso. Razona en voz alta antes de cada paso (chain of thought). Genera la mejor respuesta posible en español."},
+          {role: "user", content: mensajeUsuario + "\n\nPLAN A SEGUIR:\n" + plan}
+        ],
+        max_tokens: 4000,
+        temperature: 0.4
+      })
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error(`Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env`);
+      }
+      throw new Error(`Executor error: ${response.status}`);
+    }
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || "";
+  }
+
+  async function llamadaReviewer(respuesta, preguntaOriginal) {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + GROQ_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: REASONING_MODEL,
+        messages: [
+          {role: "system", content: "Eres un revisor crítico senior. Revisa la siguiente respuesta buscando errores lógicos, omisiones, mejores prácticas faltantes, o si no respondió exactamente lo pedido. Si está perfecta, devuélvela tal cual. Si tiene errores, corrígela y devuelve solo la versión corregida. NO agregues metacommentarios del tipo 'como revisor'."},
+          {role: "user", content: `PREGUNTA ORIGINAL:\n${preguntaOriginal}\n\nRESPUESTA A REVISAR:\n${respuesta}\n\nDevuelve la respuesta corregida y mejorada.`}
+        ],
+        max_tokens: 4000,
+        temperature: 0.2
+      })
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error(`Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env`);
+      }
+      throw new Error(`Reviewer error: ${response.status}`);
+    }
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || respuesta;
+  }
+
+  async function ejecutarLLMDirecto(conversationId, historial, opciones = {}) {
+    const modo = modoValido(opciones.modo);
+    send({
+      type: "estado",
+      valor: modo === "razonamiento" ? "razonando" : "pensando",
+      conversationId
+    });
 
     const request = {
       model: modo === "razonamiento" ? REASONING_MODEL : CHAT_MODEL,
       messages: prepararMensajes(historial, modo),
-      max_completion_tokens: modo === "razonamiento" ? 5000 : 420,
-      temperature: modo === "razonamiento" ? 0.6 : 0.65,
+      max_tokens: modo === "razonamiento" ? 7000 : 700,
+      temperature: modo === "razonamiento" ? 0.45 : 0.65,
       stream: true,
     };
 
-    if (modo === "razonamiento") {
-      request.reasoning_effort = "high";
-      request.include_reasoning = false;
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + GROQ_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error(`Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env`);
+      }
+      throw new Error(`Groq error: ${response.status}`);
     }
 
-    const stream = await groq.chat.completions.create(request);
+    const stream = response.body;
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
 
     let respuestaCompleta = "";
     let bufferTexto = "";
     const CORTE = /[.!?]+\s*/;
-    send({ type: "estado", valor: "hablando" });
 
-    for await (const chunk of stream) {
-      const token = chunk.choices[0]?.delta?.content || "";
-      if (!token) continue;
-      respuestaCompleta += token;
-      bufferTexto += token;
-      if (CORTE.test(bufferTexto) && bufferTexto.length > 15) {
-        const match = bufferTexto.match(CORTE);
-        const idx   = bufferTexto.indexOf(match[0]) + match[0].length;
-        const frase = bufferTexto.slice(0, idx).trim();
-        bufferTexto = bufferTexto.slice(idx);
-        if (frase) await enviarFrase(frase);
+    send({
+      type: "estado",
+      valor: "hablando",
+      conversationId
+    });
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(data);
+            const token = parsed.choices[0]?.delta?.content || "";
+            if (!token) continue;
+
+            respuestaCompleta += token;
+            bufferTexto += token;
+
+            if (CORTE.test(bufferTexto) && bufferTexto.length > 15) {
+              const match = bufferTexto.match(CORTE);
+              const idx = bufferTexto.indexOf(match[0]) + match[0].length;
+              const frase = bufferTexto.slice(0, idx).trim();
+              bufferTexto = bufferTexto.slice(idx);
+              if (frase) {
+                enviarFrase(frase).catch((err) => {
+                  console.error("[TTS ERROR]", err);
+                });
+              }
+            }
+          } catch (e) {
+            // Ignorar chunks malformados
+          }
+        }
       }
     }
-    if (bufferTexto.trim()) await enviarFrase(bufferTexto.trim());
-    send({ type: "streamTerminado" });
+
+    if (bufferTexto.trim()) {
+      enviarFrase(bufferTexto.trim()).catch((err) => {
+        console.error("[TTS ERROR]", err);
+      });
+    }
+
+    send({
+      type: "streamTerminado",
+      conversationId
+    });
+
     historial.push({ role: "assistant", content: respuestaCompleta });
-    send({ type: "mensaje", rol: "charvis", texto: respuestaCompleta });
+    guardarHistorial(conversationId, historial);
+    send({
+      type: "mensaje",
+      rol: "charvis",
+      texto: respuestaCompleta,
+      conversationId
+    });
   }
 
   ws.on("message", async (data, isBinary) => {
     if (isBinary) {
-      if (procesando) return;
-      procesando = true;
+      const conversationId = conversationIdActivo;
+      if (estaProcesando(conversationId)) return;
+      iniciarProcesamiento(conversationId);
       const tmpFile = path.join(__dirname, `tmp_${crypto.randomUUID()}.webm`);
       try {
-        send({ type: "estado", valor: "transcribiendo" });
+        send({ type: "estado", valor: "transcribiendo", conversationId });
         fs.writeFileSync(tmpFile, data);
         const tr = await groq.audio.transcriptions.create({
           file: fs.createReadStream(tmpFile),
@@ -377,65 +641,115 @@ wss.on("connection", (ws, req) => {
         });
         const texto = tr.text.trim();
         if (!texto || texto.length < 2) {
-          send({ type: "estado", valor: "escuchando" });
+          send({ type: "estado", valor: "escuchando", conversationId });
           return;
         }
+        let historial = obtenerHistorial(conversationId);
         const ultimoAsistente = [...historial].reverse().find(m => m.role === "assistant")?.content || "";
         if (esEco(texto, ultimoAsistente)) {
-          send({ type: "estado", valor: "escuchando" });
+          send({ type: "estado", valor: "escuchando", conversationId });
           return;
         }
-        send({ type: "mensaje", rol: "usuario", texto });
+        send({ type: "mensaje", rol: "usuario", texto, conversationId });
         historial.push({ role: "user", content: texto });
         historial = recortarHistorial(historial);
-        await procesarConLLM(historial);
+        guardarHistorial(conversationId, historial);
+        const modoDetectado = /modo razonamiento|razona profundo|razonamiento profundo/i.test(texto)
+          ? "razonamiento"
+          : "normal";
+        await procesarConLLM(conversationId, historial, { modo: modoDetectado });
       } catch (err) {
         console.error("[GROQ ERROR]", err);
         if (err.status === 401) {
-          send({ type: "error", mensaje: "Error de autenticación: Tu GROQ_API_KEY es inválida o expiró." });
+          send({ type: "error", mensaje: "Error de autenticación: Tu GROQ_API_KEY es inválida o expiró.", conversationId });
           return;
         }
-        send({ type: "error", mensaje: err.message });
+        send({ type: "error", mensaje: err.message, conversationId });
       } finally {
         if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
-        procesando = false;
+        finalizarProcesamiento(conversationId);
       }
     } else {
       try {
         const msg = JSON.parse(data.toString());
         if (msg.type === "limpiar") {
-          historial = crearHistorial();
-          procesando = false;
-          send({ type: "limpiar" });
+          const conversationId = obtenerConversationId(msg);
+
+          historiales.set(conversationId, crearHistorial());
+          finalizarProcesamiento(conversationId);
+
+          send({
+            type: "limpiar",
+            conversationId
+          });
           return;
         }
         if (msg.type === "texto") {
-          if (procesando) return;
-          procesando = true;
+          if (msg.conversationId) {
+            conversationIdActivo = obtenerConversationId(msg);
+          }
+          const conversationId = obtenerConversationId(msg);
+
+          if (estaProcesando(conversationId)) return;
+          iniciarProcesamiento(conversationId);
           try {
             const modo = modoValido(msg.modo);
             const textoUsuario = String(msg.texto || "").trim();
-            let contenidoUsuario = "";
+            let contenidoUsuario = textoUsuario || "Analiza los archivos adjuntos y dame una respuesta útil.";
 
-            if (msg.archivo) {
-              send({ type: "estado", valor: "analizandoArchivo" });
-              contenidoUsuario += await analizarArchivo(msg.archivo, textoUsuario, modo);
-              contenidoUsuario += "\n\n";
+            // Procesar adjuntos
+            if (msg.adjuntos && Array.isArray(msg.adjuntos) && msg.adjuntos.length > 0) {
+              const partesAdjuntos = [];
+
+              msg.adjuntos.forEach(adj => {
+                if (adj.tipo === 'texto' && adj.contenido) {
+                  partesAdjuntos.push(`--- Archivo: ${adj.nombre} ---\n${adj.contenido}\n--- Fin archivo ---`);
+                }
+              });
+
+              if (partesAdjuntos.length > 0) {
+                contenidoUsuario += `\n\n[Archivos adjuntos:]\n\n${partesAdjuntos.join('\n\n')}`;
+              }
             }
 
-            contenidoUsuario += textoUsuario || "Analiza el archivo adjunto y dame una respuesta util.";
+            let historial = obtenerHistorial(conversationId);
             historial.push({ role: "user", content: contenidoUsuario });
+
+            // Para imágenes, usar formato de visión de OpenAI
+            const tieneImagenes = msg.adjuntos?.some(a => a.tipo === 'imagen');
+
+            if (tieneImagenes) {
+              const mensajeVision = {
+                role: "user",
+                content: [
+                  {type: "text", text: contenidoUsuario}
+                ]
+              };
+
+              msg.adjuntos.filter(a => a.tipo === 'imagen').forEach(img => {
+                mensajeVision.content.push({
+                  type: "image_url",
+                  image_url: {url: img.dataUrl, detail: "auto"}
+                });
+              });
+
+              // Reemplazar el último mensaje de usuario con el formato de visión
+              historial.pop();
+              historial.push(mensajeVision);
+            }
+
             historial = recortarHistorial(historial);
-            await procesarConLLM(historial, { modo });
+            guardarHistorial(conversationId, historial);
+            await procesarConLLM(conversationId, historial, { modo });
           } catch (err) {
-            console.error("[GROQ ERROR]", err);
-            if (err.status === 401) {
-              send({ type: "error", mensaje: "Error de autenticación: Tu GROQ_API_KEY es inválida." });
+            console.error("[OPENAI ERROR]", err);
+            if (err.message.includes("401")) {
+              send({ type: "error", mensaje: "Error de autenticación: Tu OPENAI_API_KEY es inválida.", conversationId });
               return;
             }
-            send({ type: "error", mensaje: err.message });
+            send({ type: "error", mensaje: err.message, conversationId });
           } finally {
-            procesando = false;
+            finalizarProcesamiento(conversationId);
           }
           return;
         }
@@ -444,8 +758,29 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-server.listen(PORT, "0.0.0.0", () => {
+// Manejo de errores del servidor
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`\n❌ ERROR: El puerto ${PORT} ya está en uso.`);
+    console.error("💡 Soluciones:");
+    console.error(`   1. Ejecutar: netstat -ano | findstr :${PORT}`);
+    console.error("   2. Encontrar el PID y ejecutar: taskkill /PID <PID> /F");
+    console.error("   3. O ejecutar: Get-NetTCPConnection -LocalPort 3000 | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }");
+    console.error("   4. Luego ejecutar: npm run dev");
+    process.exit(1);
+  }
+
+  console.error("❌ Error del servidor:", error);
+  process.exit(1);
+});
+
+server.listen(PORT, "0.0.0.0", async () => {
   console.log(`\n🚀 CHARVIS ONLINE`);
   console.log(`🌍 Puerto: ${PORT}`);
-  console.log(`🔧 Modo: ${process.env.NODE_ENV || 'development'}\n`);
+  console.log(`🔧 Modo: ${process.env.NODE_ENV || 'development'}`);
+
+  // Verificar clave de OpenAI al iniciar
+  await verificarClaveGroq();
+
+  console.log(`\n✅ Servidor listo y funcionando!\n`);
 });
