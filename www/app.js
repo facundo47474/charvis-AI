@@ -5,20 +5,147 @@ let renderizandoConversacion = false;
 let modoRazonamientoActivo = false;
 let ws = null;
 let archivosAdjuntos = [];
+let audioActivo = true;
+let grabando = false;
+let mediaRecorder = null;
+let audioChunks = [];
 
-const STORAGE_KEY = "charvis_conversaciones_v2";
+// Auth state
+let authToken = localStorage.getItem("charvis_token");
+let currentUser = null;
+let STORAGE_KEY = "charvis_conversaciones_v2"; // Se actualizará al loguear
+let currentAudio = null;
 
 /* ========================= */
 /* INICIO */
 /* ========================= */
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  await inicializarAuth();
+  configurarTecladoMobile();
+});
+
+/* ========================= */
+/* AUTHENTICATION */
+/* ========================= */
+
+async function inicializarAuth() {
+  const loginScreen = document.getElementById("login-screen");
+  const appContainer = document.getElementById("app");
+  
+  if (authToken) {
+    try {
+      const res = await fetch("/api/auth/me", {
+        headers: { "Authorization": `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        alCompletarLogin(data.user);
+        return;
+      } else {
+        authToken = null;
+        localStorage.removeItem("charvis_token");
+      }
+    } catch (e) {
+      console.error("Error validando token:", e);
+    }
+  }
+
+  // Si no hay token válido, mostrar login y cargar config
+  loginScreen.style.display = "flex";
+  appContainer.style.display = "none";
+  
+  // Iniciar efecto visual de partículas
+  initAmbientCanvas();
+  
+  try {
+    const confRes = await fetch("/api/auth/config");
+    const config = await confRes.json();
+    
+    if (config.googleClientId) {
+      const initGoogle = () => {
+        if (window.google && window.google.accounts) {
+          google.accounts.id.initialize({
+            client_id: config.googleClientId,
+            callback: handleGoogleLogin
+          });
+          google.accounts.id.renderButton(
+            document.getElementById("google-btn-container"),
+            { theme: "outline", size: "large", type: "standard", width: "100%", text: "continue_with" }
+          );
+        } else {
+          setTimeout(initGoogle, 100);
+        }
+      };
+      initGoogle();
+    } else {
+      document.getElementById("login-error").textContent = "Google Client ID no configurado en el servidor.";
+    }
+  } catch(e) {
+    console.error("Error obteniendo config:", e);
+  }
+}
+
+async function handleGoogleLogin(response) {
+  try {
+    const res = await fetch("/api/auth/google", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential: response.credential })
+    });
+    
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    
+    authToken = data.token;
+    localStorage.setItem("charvis_token", authToken);
+    alCompletarLogin(data.user);
+  } catch (err) {
+    document.getElementById("login-error").textContent = err.message;
+  }
+}
+
+function alCompletarLogin(user) {
+  currentUser = user;
+  document.getElementById("login-screen").style.display = "none";
+  document.getElementById("app").style.display = "flex";
+  
+  const safeName = (user.email || user.name || "default").replace(/[^a-zA-Z0-9]/g, "_");
+  STORAGE_KEY = `charvis_conversaciones_v2_${safeName}`;
+  
+  const avatar = document.getElementById("user-avatar");
+  const nameLabel = document.getElementById("user-name");
+  
+  if (user.picture) {
+    avatar.innerHTML = `<img src="${user.picture}" alt="Avatar" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">`;
+  } else {
+    avatar.textContent = user.name.charAt(0).toUpperCase();
+  }
+  nameLabel.textContent = user.name;
+  
   cargarConversaciones();
   iniciarConversaciones();
   conectarWebSocket();
   renderizarConversacion(obtenerConversacionActiva());
-  configurarTecladoMobile();
-});
+}
+
+async function cerrarSesion() {
+  if (authToken) {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${authToken}` }
+      });
+    } catch (e) {}
+  }
+  authToken = null;
+  currentUser = null;
+  localStorage.removeItem("charvis_token");
+  if (ws) {
+    ws.close();
+  }
+  window.location.reload();
+}
 
 /* ========================= */
 /* WEBSOCKET */
@@ -26,10 +153,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function conectarWebSocket() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${protocol}//${location.host}`;
+  let urlStr = `${protocol}//${location.host}`;
+  if (authToken) {
+    urlStr += `?token=${authToken}`;
+  }
 
   try {
-    ws = new WebSocket(url);
+    ws = new WebSocket(urlStr);
 
     ws.onopen = () => {
       actualizarEstadoConexion(true);
@@ -96,12 +226,38 @@ function manejarMensajeServidor(data) {
   }
 
   if (msg.type === "error") {
-    agregarError(msg.texto || "Ocurrió un error.");
+    agregarError(msg.texto || msg.mensaje || "Ocurrió un error.");
     return;
   }
 
   if (msg.type === "estado") {
     mostrarEstadoTemporal(msg.valor || "pensando");
+    return;
+  }
+
+  if (msg.type === "reproducir" && msg.data && audioActivo) {
+    try {
+      const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: "audio/mpeg" });
+      const url = URL.createObjectURL(blob);
+      if (currentAudio) currentAudio.pause();
+      currentAudio = new Audio(url);
+      currentAudio.onended = () => URL.revokeObjectURL(url);
+      currentAudio.play().catch(() => {});
+    } catch (e) { /* ignorar */ }
+    return;
+  }
+
+  if (msg.type === "hablar" && msg.texto && audioActivo) {
+    const utt = new SpeechSynthesisUtterance(msg.texto);
+    utt.lang = "es-AR";
+    utt.rate = 1.05;
+    speechSynthesis.speak(utt);
+    return;
+  }
+
+  if (msg.type === "streamTerminado") {
+    // El mensaje final ya llega como "mensaje", nada extra que hacer
     return;
   }
 }
@@ -123,22 +279,7 @@ function guardarMensajeServidorEnConversacion(conversationId, msg) {
   }
 }
 
-function enviarAlServidor(texto) {
-  const payload = {
-    type: "texto",
-    texto,
-    mensaje: texto,
-    conversationId: activeConversationId,
-    modo: modoRazonamientoActivo ? "razonamiento" : "normal"
-  };
-
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(payload));
-    return;
-  }
-
-  agregarError("Charvis se está reconectando. Intentá nuevamente en unos segundos.");
-}
+/* enviarAlServidor movida a sección de envío con adjuntos */
 
 /* ========================= */
 /* CONVERSACIONES */
@@ -248,15 +389,26 @@ function actualizarSidebarConversaciones() {
   sidebarHistory.innerHTML = "";
 
   conversaciones.forEach((conversacion) => {
-    const item = document.createElement("button");
+    const row = document.createElement("div");
+    row.className = "history-row";
 
+    const item = document.createElement("button");
     item.type = "button";
     item.className = "history-item";
     item.classList.toggle("active", conversacion.id === activeConversationId);
     item.textContent = conversacion.titulo;
     item.onclick = () => seleccionarConversacion(conversacion.id);
 
-    sidebarHistory.appendChild(item);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "history-delete";
+    del.title = "Borrar conversación";
+    del.textContent = "✕";
+    del.onclick = (e) => { e.stopPropagation(); borrarConversacion(conversacion.id); };
+
+    row.appendChild(item);
+    row.appendChild(del);
+    sidebarHistory.appendChild(row);
   });
 }
 
@@ -361,7 +513,7 @@ function obtenerPantallaBienvenida() {
             <button
               type="button"
               class="icon-action"
-              onclick="accionProximamente('Adjuntar archivo')"
+              onclick="document.getElementById('file-input').click()"
               title="Adjuntar archivo"
             >
               +
@@ -370,7 +522,7 @@ function obtenerPantallaBienvenida() {
             <button
               type="button"
               class="tool-button"
-              onclick="accionProximamente('Herramientas')"
+              onclick="toggleModoRazonamiento()"
             >
               Herramientas
             </button>
@@ -389,10 +541,11 @@ function obtenerPantallaBienvenida() {
             <button
               type="button"
               class="voice-button"
-              onclick="accionProximamente('Voz')"
-              title="Voz"
+              id="hero-voice-btn"
+              onclick="toggleGrabacion()"
+              title="Grabar voz"
             >
-              ◌
+              🎙
             </button>
 
             <button
@@ -545,16 +698,21 @@ function handleFiles(files) {
 }
 
 function renderFilePreviews() {
-  const composer = document.querySelector('.composer-shell');
-  let previewsContainer = composer.querySelector('.file-previews');
+  const isWelcome = document.body.classList.contains("welcome-active");
+  const composer = isWelcome ? document.querySelector('.hero-composer-card') : document.querySelector('.composer-shell');
+  
+  if (!composer) return;
 
-  if (!previewsContainer) {
-    previewsContainer = document.createElement('div');
-    previewsContainer.className = 'file-previews';
-    composer.insertBefore(previewsContainer, composer.firstChild);
+  // Clean up existing previews in both places to avoid duplicates
+  document.querySelectorAll('.file-previews').forEach(el => el.remove());
+
+  if (archivosAdjuntos.length === 0) {
+    return;
   }
 
-  previewsContainer.innerHTML = '';
+  const previewsContainer = document.createElement('div');
+  previewsContainer.className = 'file-previews';
+  composer.insertBefore(previewsContainer, composer.firstChild);
 
   archivosAdjuntos.forEach((adjunto, index) => {
     const preview = document.createElement('div');
@@ -810,7 +968,12 @@ function agregarMensaje(rol, texto, adjuntos = []) {
 
   const text = document.createElement("div");
   text.className = "msg-text";
-  text.textContent = texto || "";
+  const rolNorm = normalizarRol(rol);
+  if (rolNorm === "charvis") {
+    text.innerHTML = markdownToHtml(texto || "");
+  } else {
+    text.textContent = texto || "";
+  }
 
   message.appendChild(text);
 
@@ -1016,12 +1179,273 @@ function configurarTecladoMobile() {
 
 function limpiar() {
   const conversacion = obtenerConversacionActiva();
-
   if (!conversacion) return;
-
   conversacion.mensajes = [];
-
   mostrarPantallaBienvenida();
   guardarConversaciones();
   actualizarSidebarConversaciones();
+}
+
+/* ========================= */
+/* BORRAR CONVERSACIÓN */
+/* ========================= */
+
+function borrarConversacion(conversationId) {
+  const idx = conversaciones.findIndex(c => c.id === conversationId);
+  if (idx === -1) return;
+
+  conversaciones.splice(idx, 1);
+
+  if (conversaciones.length === 0) {
+    conversationCount = 0;
+  }
+
+  if (activeConversationId === conversationId) {
+    if (conversaciones.length > 0) {
+      activeConversationId = conversaciones[0].id;
+      renderizarConversacion(obtenerConversacionActiva());
+    } else {
+      const nueva = crearConversacion("Conversación 1");
+      activeConversationId = nueva.id;
+      mostrarPantallaBienvenida();
+    }
+  }
+
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "limpiar", conversationId }));
+  }
+
+  guardarConversaciones();
+  actualizarSidebarConversaciones();
+  actualizarTituloConversacion();
+}
+
+/* ========================= */
+/* AUDIO TOGGLE */
+/* ========================= */
+
+function toggleAudio() {
+  audioActivo = !audioActivo;
+  const btn = document.getElementById("audio-toggle");
+  if (btn) {
+    btn.textContent = audioActivo ? "🔊" : "🔇";
+    btn.title = audioActivo ? "Voz activada" : "Voz silenciada";
+  }
+  
+  if (!audioActivo) {
+    speechSynthesis.cancel();
+    if (currentAudio) {
+      currentAudio.pause();
+    }
+  }
+  
+  mostrarAvisoTemporal(audioActivo ? "Voz activada" : "Voz silenciada");
+}
+
+/* ========================= */
+/* VOZ — GRABACIÓN */
+/* ========================= */
+
+async function toggleGrabacion() {
+  if (grabando) {
+    detenerGrabacion();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(audioChunks, { type: "audio/webm" });
+      if (blob.size < 1000) { mostrarAvisoTemporal("Audio muy corto, intentá de nuevo."); return; }
+      const buffer = await blob.arrayBuffer();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(buffer);
+        mostrarEstadoTemporal("transcribiendo");
+      } else {
+        agregarError("Sin conexión al servidor.");
+      }
+    };
+
+    mediaRecorder.start();
+    grabando = true;
+    actualizarBotonesVoz(true);
+    mostrarAvisoTemporal("Grabando... tocá el micrófono para detener.");
+  } catch (err) {
+    mostrarAvisoTemporal("No se pudo acceder al micrófono: " + err.message);
+  }
+}
+
+function detenerGrabacion() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+  }
+  grabando = false;
+  actualizarBotonesVoz(false);
+}
+
+function actualizarBotonesVoz(rec) {
+  const btns = ["voice-btn", "hero-voice-btn"];
+  btns.forEach(id => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    b.textContent = rec ? "⏹" : "🎙";
+    b.classList.toggle("recording", rec);
+    b.title = rec ? "Detener grabación" : "Grabar voz";
+  });
+}
+
+/* ========================= */
+/* MARKDOWN BÁSICO */
+/* ========================= */
+
+function markdownToHtml(text) {
+  if (!text) return "";
+  let html = text
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code.trim()}</code></pre>`)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/^#{3} (.+)$/gm, "<h3>$1</h3>")
+    .replace(/^#{2} (.+)$/gm, "<h2>$1</h2>")
+    .replace(/^#{1} (.+)$/gm, "<h1>$1</h1>")
+    .replace(/^[-*] (.+)$/gm, "<li>$1</li>")
+    .replace(/(<li>.*<\/li>)/gs, "<ul>$1</ul>")
+    .replace(/\n{2,}/g, "</p><p>")
+    .replace(/\n/g, "<br>");
+  if (!html.startsWith("<")) html = "<p>" + html + "</p>";
+  return html;
+}
+
+/* ========================= */
+/* ESTADO VISUAL */
+/* ========================= */
+
+function mostrarEstadoTemporal(valor) {
+  const estados = {
+    pensando: "💭 Pensando...",
+    razonando: "🧠 Razonando...",
+    hablando: "🔊 Respondiendo...",
+    transcribiendo: "🎙 Transcribiendo voz...",
+    entendiendo_problema: "🔍 Analizando el problema...",
+    creando_plan: "📋 Creando plan...",
+    ejecutando_plan: "⚙️ Ejecutando plan...",
+    verificando_respuesta: "✅ Revisando respuesta...",
+    finalizado: "✓ Listo",
+    escuchando: "👂 Escuchando..."
+  };
+  const texto = estados[valor] || valor;
+  mostrarAvisoTemporal(texto);
+}
+
+/* ========================= */
+/* EFECTO VISUAL LOGIN (ORBES) */
+/* ========================= */
+
+function initAmbientCanvas() {
+  const canvas = document.getElementById('ambient-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  
+  let width = canvas.width = canvas.offsetWidth;
+  let height = canvas.height = canvas.offsetHeight;
+  
+  let mouse = { x: width / 2, y: height / 2, moved: false };
+  
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - rect.left;
+    mouse.y = e.clientY - rect.top;
+    mouse.moved = true;
+  });
+
+  window.addEventListener('resize', () => {
+    width = canvas.width = canvas.offsetWidth;
+    height = canvas.height = canvas.offsetHeight;
+  });
+
+  const orbs = [];
+  // Colores intensos y vibrantes tipo Gemini/Siri
+  const colors = [
+    '#4F46E5', // Indigo vibrante
+    '#EC4899', // Rosa neón
+    '#8B5CF6', // Púrpura eléctrico
+    '#F59E0B', // Ámbar brillante
+    '#06B6D4'  // Cyan intenso
+  ];
+
+  for (let i = 0; i < 6; i++) {
+    orbs.push({
+      x: Math.random() * width,
+      y: Math.random() * height,
+      vx: (Math.random() - 0.5) * 1.5,
+      vy: (Math.random() - 0.5) * 1.5,
+      radius: Math.random() * 400 + 300, // Orbes enormes para que se mezclen
+      color: colors[i % colors.length],
+      targetX: Math.random() * width,
+      targetY: Math.random() * height,
+      angle: Math.random() * Math.PI * 2,
+      speed: Math.random() * 0.02 + 0.01
+    });
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, width, height);
+    
+    // Fondo base oscuro premium
+    ctx.fillStyle = '#05050A';
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.globalCompositeOperation = 'screen'; // Fusión aditiva para que brillen juntos
+
+    orbs.forEach((orb, i) => {
+      // El orbe principal (índice 0) o índice 1 siguen al mouse más intensamente
+      if ((i === 0 || i === 1) && mouse.moved) {
+        orb.targetX = mouse.x + (i===1 ? 100 * Math.cos(orb.angle) : 0);
+        orb.targetY = mouse.y + (i===1 ? 100 * Math.sin(orb.angle) : 0);
+      } else {
+        // Movimiento caótico y fluido
+        orb.targetX += orb.vx;
+        orb.targetY += orb.vy;
+        
+        if (orb.targetX < -orb.radius || orb.targetX > width + orb.radius) orb.vx *= -1;
+        if (orb.targetY < -orb.radius || orb.targetY > height + orb.radius) orb.vy *= -1;
+      }
+
+      orb.angle += orb.speed;
+
+      // Movimiento suave con un toque de seno/coseno para simular fluido
+      orb.x += (orb.targetX - orb.x) * 0.03 + Math.sin(orb.angle) * 2;
+      orb.y += (orb.targetY - orb.y) * 0.03 + Math.cos(orb.angle) * 2;
+
+      // Dibuja el gradiente radial intenso
+      const grad = ctx.createRadialGradient(orb.x, orb.y, 0, orb.x, orb.y, orb.radius);
+      // Extraemos el RGB de los hex
+      let hex = orb.color.replace('#','');
+      let r = parseInt(hex.substring(0,2), 16);
+      let g = parseInt(hex.substring(2,4), 16);
+      let b = parseInt(hex.substring(4,6), 16);
+      
+      grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.8)`);
+      grad.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, 0.3)`);
+      grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(orb.x, orb.y, orb.radius, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    ctx.globalCompositeOperation = 'source-over'; // Restaurar
+    requestAnimationFrame(render);
+  }
+
+  render();
 }

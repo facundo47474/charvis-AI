@@ -6,6 +6,7 @@ const path       = require("path");
 const fs         = require("fs");
 const https      = require("https");
 const crypto     = require("crypto");
+const Groq       = require("groq-sdk");
 
 const { recortarHistorial } = require("./historial");
 const { esEco } = require("./eco");
@@ -13,6 +14,7 @@ const { esEco } = require("./eco");
 if (!process.env.GROQ_API_KEY) throw new Error("Falta GROQ_API_KEY en .env");
 
 const GROQ_KEY = process.env.GROQ_API_KEY;
+const groq = new Groq({ apiKey: GROQ_KEY });
 
 // Verificar que la clave de Groq sea válida al iniciar
 async function verificarClaveGroq() {
@@ -49,40 +51,93 @@ const VOICE_ID      = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
 const PORT          = process.env.PORT || 3000;
 const CHAT_MODEL    = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
 const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "openai/gpt-oss-120b";
-const VISION_MODEL  = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+const VISION_MODEL  = process.env.GROQ_VISION_MODEL || "llama-3.2-11b-vision-preview";
 const APP_USER      = process.env.APP_USER || "admin";
 const APP_PASSWORD  = process.env.APP_PASSWORD || "facu";
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
 const MAX_EXTRACTED_CHARS = 60000;
 const MAX_EXTRACTED_CHARS_REASONING = 24000;
 const MAX_FILE_BYTES = 12 * 1024 * 1024;
+
+// --- Sesiones en memoria ---
+const sessions = new Map();
+const SESSION_DURATION = 7 * 24 * 60 * 60 * 1000; // 7 días
+
+function generarToken() { return crypto.randomUUID(); }
+
+function verificarSesion(token) {
+  if (!token) return null;
+  const s = sessions.get(token);
+  if (!s) return null;
+  if (Date.now() - s.createdAt > SESSION_DURATION) { sessions.delete(token); return null; }
+  return s;
+}
 
 const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocketServer({ server });
 
-// Middleware de autenticación simple
-const authMiddleware = (req, res, next) => {
-  if (!APP_PASSWORD) return next(); // Si no hay password configurado, permitir acceso
-
-  const authHeader = req.headers.authorization || "";
-  const [type, credentials] = authHeader.split(" ");
-
-  if (type === "Basic") {
-    const [user, pass] = Buffer.from(credentials, "base64").toString().split(":");
-    if (user === APP_USER && pass === APP_PASSWORD) {
-      return next();
-    }
-  }
-
-  res.setHeader("WWW-Authenticate", 'Basic realm="Charvis Private"');
-  res.status(401).send("Acceso restringido. Por favor, identifícate.");
-};
-
-app.use(authMiddleware);
+// Archivos estáticos sin auth (la SPA maneja su propio estado de login)
 app.use(express.static(path.join(__dirname, "www")));
+app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: Date.now() });
+});
+
+// --- Auth endpoints ---
+app.get("/api/auth/config", (_req, res) => {
+  res.json({
+    googleClientId: GOOGLE_CLIENT_ID || null,
+    hasPassword: !!APP_PASSWORD
+  });
+});
+
+app.post("/api/auth/google", async (req, res) => {
+  const { credential } = req.body;
+  if (!credential) return res.status(400).json({ error: "Sin credencial" });
+  if (!GOOGLE_CLIENT_ID) return res.status(400).json({ error: "Google OAuth no configurado" });
+  try {
+    const gRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
+    if (!gRes.ok) throw new Error("Token de Google inválido");
+    const payload = await gRes.json();
+    if (payload.aud !== GOOGLE_CLIENT_ID) throw new Error("Client ID no coincide");
+    const token = generarToken();
+    sessions.set(token, {
+      email: payload.email, name: payload.name, picture: payload.picture,
+      provider: "google", createdAt: Date.now()
+    });
+    res.json({ token, user: { email: payload.email, name: payload.name, picture: payload.picture } });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post("/api/auth/login", (req, res) => {
+  const { username, password } = req.body;
+  if (!APP_PASSWORD) return res.status(400).json({ error: "Login con contraseña no configurado" });
+  if (username === APP_USER && password === APP_PASSWORD) {
+    const token = generarToken();
+    sessions.set(token, {
+      email: null, name: username, picture: null,
+      provider: "password", createdAt: Date.now()
+    });
+    return res.json({ token, user: { name: username, picture: null } });
+  }
+  res.status(401).json({ error: "Usuario o contraseña incorrectos" });
+});
+
+app.get("/api/auth/me", (req, res) => {
+  const token = (req.headers.authorization || "").replace("Bearer ", "");
+  const session = verificarSesion(token);
+  if (!session) return res.status(401).json({ error: "No autenticado" });
+  res.json({ user: { name: session.name, email: session.email, picture: session.picture } });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  const token = (req.headers.authorization || "").replace("Bearer ", "");
+  sessions.delete(token);
+  res.json({ ok: true });
 });
 function instruccionesCharvis() {
   return (
@@ -323,22 +378,17 @@ function crearHistorial() {
 }
 
 wss.on("connection", (ws, req) => {
-  // Doble verificación para el WebSocket
-  if (APP_PASSWORD) {
-    const authHeader = req.headers.authorization || "";
-    const [type, credentials] = authHeader.split(" ");
-    let authorized = false;
-
-    if (type === "Basic") {
-      const [user, pass] = Buffer.from(credentials, "base64").toString().split(":");
-      if (user === APP_USER && pass === APP_PASSWORD) authorized = true;
-    }
-
-    if (!authorized) {
+  // Verificar token de sesión del WebSocket (si se envía)
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const token = url.searchParams.get("token") || "";
+  if (token) {
+    const session = verificarSesion(token);
+    if (!session) {
       ws.close(1008, "No autorizado");
       return;
     }
   }
+  // Si no hay token se permite la conexión (compatibilidad)
 
   const historiales = new Map();
   const procesandoPorConversacion = new Set();
@@ -393,8 +443,14 @@ wss.on("connection", (ws, req) => {
     const modo = modoValido(opciones.modo);
 
     // Detector de complejidad
-    const ultimoMensajeUsuario = historial.filter(m => m.role === "user").pop()?.content || "";
-    const esComplejo = detectarComplejidad(ultimoMensajeUsuario) && modo === "razonamiento";
+    let ultimoMensajeUsuario = historial.filter(m => m.role === "user").pop()?.content || "";
+    const tieneImagenes = historial.some(m => Array.isArray(m.content) && m.content.some(c => c.type === "image_url"));
+
+    if (Array.isArray(ultimoMensajeUsuario)) {
+      const textObj = ultimoMensajeUsuario.find(item => item.type === 'text');
+      ultimoMensajeUsuario = textObj ? textObj.text : "";
+    }
+    const esComplejo = !tieneImagenes && detectarComplejidad(ultimoMensajeUsuario) && modo === "razonamiento";
 
     if (!esComplejo) {
       // Flujo normal directo
@@ -430,8 +486,13 @@ wss.on("connection", (ws, req) => {
     }
   }
 
-  function detectarComplejidad(texto) {
-    if (!texto || texto.split(/\s+/).length < 15) return false;
+  function detectarComplejidad(textoInput) {
+    let texto = textoInput;
+    if (Array.isArray(textoInput)) {
+      const textObj = textoInput.find(item => item.type === 'text');
+      texto = textObj ? textObj.text : "";
+    }
+    if (!texto || typeof texto !== "string" || texto.split(/\s+/).length < 15) return false;
     const clave = /analiza|corrige todo|compara|razona|paso a paso|proyecto|refactoriza|debug|investiga|sumariza|documento|archivo|optimiza|explica completo|revisa todo/i;
     return clave.test(texto);
   }
@@ -456,7 +517,13 @@ wss.on("connection", (ws, req) => {
 
     if (!response.ok) {
       if (response.status === 401) {
-        throw new Error(`Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env`);
+        throw new Error("Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env.");
+      }
+      if (response.status === 413) {
+        throw new Error("El archivo adjunto o el texto es demasiado largo para procesar. Por favor, intenta con un archivo más pequeño o un fragmento más corto.");
+      }
+      if (response.status === 429) {
+        throw new Error("La red está muy ocupada o excediste el límite de peticiones. Por favor, espera un momento e intenta de nuevo.");
       }
       throw new Error(`Planner error: ${response.status}`);
     }
@@ -484,7 +551,13 @@ wss.on("connection", (ws, req) => {
 
     if (!response.ok) {
       if (response.status === 401) {
-        throw new Error(`Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env`);
+        throw new Error("Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env.");
+      }
+      if (response.status === 413) {
+        throw new Error("El archivo adjunto o el texto es demasiado largo para procesar. Por favor, intenta con un archivo más pequeño o un fragmento más corto.");
+      }
+      if (response.status === 429) {
+        throw new Error("La red está muy ocupada o excediste el límite de peticiones. Por favor, espera un momento e intenta de nuevo.");
       }
       throw new Error(`Executor error: ${response.status}`);
     }
@@ -512,7 +585,13 @@ wss.on("connection", (ws, req) => {
 
     if (!response.ok) {
       if (response.status === 401) {
-        throw new Error(`Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env`);
+        throw new Error("Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env.");
+      }
+      if (response.status === 413) {
+        throw new Error("El archivo adjunto o el texto es demasiado largo para procesar. Por favor, intenta con un archivo más pequeño o un fragmento más corto.");
+      }
+      if (response.status === 429) {
+        throw new Error("La red está muy ocupada o excediste el límite de peticiones. Por favor, espera un momento e intenta de nuevo.");
       }
       throw new Error(`Reviewer error: ${response.status}`);
     }
@@ -528,11 +607,14 @@ wss.on("connection", (ws, req) => {
       conversationId
     });
 
+    const tieneImagenes = historial.some(m => Array.isArray(m.content) && m.content.some(c => c.type === "image_url"));
+    const modelToUse = tieneImagenes ? VISION_MODEL : (modo === "razonamiento" ? REASONING_MODEL : CHAT_MODEL);
+
     const request = {
-      model: modo === "razonamiento" ? REASONING_MODEL : CHAT_MODEL,
+      model: modelToUse,
       messages: prepararMensajes(historial, modo),
-      max_tokens: modo === "razonamiento" ? 7000 : 700,
-      temperature: modo === "razonamiento" ? 0.45 : 0.65,
+      max_tokens: modo === "razonamiento" && !tieneImagenes ? 7000 : 700,
+      temperature: modo === "razonamiento" && !tieneImagenes ? 0.45 : 0.65,
       stream: true,
     };
 
@@ -547,7 +629,13 @@ wss.on("connection", (ws, req) => {
 
     if (!response.ok) {
       if (response.status === 401) {
-        throw new Error(`Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env`);
+        throw new Error("Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env.");
+      }
+      if (response.status === 413) {
+        throw new Error("El archivo adjunto o el texto es demasiado largo para procesar. Por favor, intenta con un archivo más pequeño o un fragmento más corto.");
+      }
+      if (response.status === 429) {
+        throw new Error("La red está muy ocupada o excediste el límite de peticiones. Por favor, espera un momento e intenta de nuevo.");
       }
       throw new Error(`Groq error: ${response.status}`);
     }

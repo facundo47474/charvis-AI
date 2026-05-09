@@ -1,14 +1,50 @@
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Charvis</title>
   <link rel="stylesheet" href="style.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 
 <body class="welcome-active">
-  <div id="app">
+  <!-- LOGIN SCREEN -->
+  <div id="login-screen" class="login-screen" style="display:none;">
+    <div class="login-left">
+      <div class="login-content">
+        <div class="login-brand">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="40" height="40" rx="12" fill="#EAE0D5"/>
+            <path d="M20 12L22.25 17.75L28 20L22.25 22.25L20 28L17.75 22.25L12 20L17.75 17.75L20 12Z" fill="#1E1E1E"/>
+          </svg>
+          <h1>Bienvenido a Charvis</h1>
+          <p class="login-subtitle">Inteligencia Artificial avanzada diseñada para razonamiento profundo, análisis de archivos y multimodalidad.</p>
+        </div>
+
+        <div id="login-google-section">
+          <div id="google-btn-container" class="google-wrapper"></div>
+          <p id="login-error" class="login-error"></p>
+        </div>
+      </div>
+      <div class="login-footer">
+        <p>Al continuar, aceptas nuestros <a>Términos de Servicio</a> y <a>Política de Privacidad</a>.</p>
+      </div>
+    </div>
+    <div class="login-right">
+      <canvas id="ambient-canvas" class="ambient-canvas"></canvas>
+      <div class="login-visual">
+        <div class="glass-card">
+          <span class="sparkle">✦</span>
+          <h2>Razonamiento Profundo</h2>
+          <p>Experimenta un pipeline de IA multi-agente capaz de planificar, ejecutar y revisar lógicamente tus tareas más complejas.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="app" style="display:none;">
     <aside id="sidebar" aria-label="Menú lateral">
       <div class="sidebar-top">
         <button id="btn-new-chat" class="sidebar-btn" type="button" onclick="nuevaConversacion()">
@@ -16,7 +52,8 @@
           <span>Nueva conversación</span>
         </button>
 
-        <button id="btn-sidebar-close" class="sidebar-close-btn" type="button" onclick="cerrarSidebar()" title="Cerrar menú">
+        <button id="btn-sidebar-close" class="sidebar-close-btn" type="button" onclick="cerrarSidebar()"
+          title="Cerrar menú">
           ×
         </button>
       </div>
@@ -25,13 +62,14 @@
 
       <div id="sidebar-history" class="sidebar-history"></div>
 
-      <div class="sidebar-user">
-        <div class="avatar">A</div>
-        <span>Creador Arguello</span>
+      <div class="sidebar-user" id="sidebar-user">
+        <div class="avatar" id="user-avatar">?</div>
+        <span id="user-name">Usuario</span>
+        <button type="button" class="sidebar-logout-btn" onclick="cerrarSesion()" title="Cerrar sesión">⏻</button>
       </div>
     </aside>
 
-    <div id="sidebar-backdrop" aria-hidden="true"></div>
+    <div id="sidebar-backdrop" aria-hidden="true" onclick="cerrarSidebar()"></div>
 
     <main id="main">
       <header id="topbar">
@@ -51,8 +89,8 @@
         </div>
 
         <div class="topbar-right">
-          <button id="audio-toggle" type="button" onclick="accionProximamente('Audio')" title="Audio">
-            ◉
+          <button id="audio-toggle" type="button" onclick="toggleAudio()" title="Voz activada">
+            🔊
           </button>
 
           <div id="connection-status" class="connection-status">
@@ -66,32 +104,21 @@
 
       <form id="composer" class="composer" onsubmit="enviarMensaje(event)">
         <div class="composer-shell">
-          <button
-            type="button"
-            class="composer-tool"
-            onclick="document.getElementById('file-input').click()"
-            title="Adjuntar archivo"
-            aria-label="Adjuntar archivo"
-          >
+          <button type="button" class="composer-tool" onclick="document.getElementById('file-input').click()"
+            title="Adjuntar archivo" aria-label="Adjuntar archivo">
             +
           </button>
 
-          <textarea
-            id="message-input"
-            placeholder="Escribí tu mensaje..."
-            rows="1"
-            autocomplete="off"
-            spellcheck="false"
-            wrap="soft"
-            oninput="autoResizeTextarea(this); sincronizarHeroInput(this.value)"
-          ></textarea>
+          <textarea id="message-input" placeholder="Escribí tu mensaje..." rows="1" autocomplete="off"
+            spellcheck="false" wrap="soft"
+            oninput="autoResizeTextarea(this); sincronizarHeroInput(this.value)"></textarea>
 
-          <button
-            type="button"
-            id="reasoning-toggle"
-            class="reasoning-toggle"
-            onclick="toggleModoRazonamiento()"
-          >
+          <button type="button" id="voice-btn" class="composer-tool voice-btn" onclick="toggleGrabacion()"
+            title="Grabar mensaje de voz">
+            🎙
+          </button>
+
+          <button type="button" id="reasoning-toggle" class="reasoning-toggle" onclick="toggleModoRazonamiento()">
             Normal
           </button>
 
@@ -103,8 +130,11 @@
     </main>
   </div>
 
-  <input type="file" id="file-input" style="display:none;" multiple accept=".txt,.js,.html,.css,.json,.md,.pdf,.png,.jpg,.jpeg,.webp" onchange="handleFiles(this.files)">
+  <input type="file" id="file-input" style="display:none;" multiple
+    accept=".txt,.js,.ts,.tsx,.jsx,.html,.css,.json,.md,.pdf,.png,.jpg,.jpeg,.webp,.csv,.py,.xml,.yaml,.yml,.docx"
+    onchange="handleFiles(this.files)" />
 
   <script src="app.js"></script>
 </body>
+
 </html>
