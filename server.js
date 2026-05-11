@@ -1,4 +1,11 @@
-require("dotenv").config();
+// --- Cargar variables de entorno ---
+const envResult = require("dotenv").config();
+if (envResult.error) {
+  console.warn("⚠️  Advertencia: No se pudo cargar el archivo .env:", envResult.error.message);
+} else {
+  console.log("✅ Archivo .env cargado correctamente");
+}
+
 const express    = require("express");
 const { WebSocketServer } = require("ws");
 const http       = require("http");
@@ -14,14 +21,26 @@ const { estimateTokens, buildModelContext, MAX_INPUT_CHARS, MAX_OUTPUT_TOKENS } 
 
 const { recortarHistorial } = require("./historial");
 const { esEco } = require("./eco");
+const pdfParse   = require("pdf-parse");
+const mammoth    = require("mammoth");
 
 // --- Abort Controllers para cancelar generación ---
 const abortControllers = new Map();
 
-if (!process.env.GROQ_API_KEY) throw new Error("Falta GROQ_API_KEY en .env");
-
+// --- Validación de Variables de Entorno ---
 const GROQ_KEY = process.env.GROQ_API_KEY;
-const groq = new Groq({ apiKey: GROQ_KEY });
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
+
+if (!GROQ_KEY) {
+  console.error("❌ ERROR: La variable GROQ_API_KEY no está configurada.");
+}
+if (!GOOGLE_CLIENT_ID) {
+  console.warn("⚠️  ADVERTENCIA: GOOGLE_CLIENT_ID no está configurado. El login de Google no funcionará.");
+} else {
+  console.log("✅ Google Client ID detectado:", GOOGLE_CLIENT_ID.substring(0, 10) + "...");
+}
+
+const groq = GROQ_KEY ? new Groq({ apiKey: GROQ_KEY }) : null;
 
 // Verificar que la clave de Groq sea válida al iniciar
 async function verificarClaveGroq() {
@@ -58,11 +77,10 @@ const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY || "";
 const VOICE_ID      = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
 const PORT          = process.env.PORT || 3000;
 const CHAT_MODEL    = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
-const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "openai/gpt-oss-120b";
+const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "deepseek-r1-distill-llama-70b";
 const VISION_MODEL  = process.env.GROQ_VISION_MODEL || "llama-3.2-11b-vision-preview";
 const APP_USER      = process.env.APP_USER || "admin";
 const APP_PASSWORD  = process.env.APP_PASSWORD || "facu";
-const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
 const MAX_EXTRACTED_CHARS = 60000;
 const MAX_EXTRACTED_CHARS_REASONING = 24000;
 const MAX_FILE_BYTES = 12 * 1024 * 1024;
