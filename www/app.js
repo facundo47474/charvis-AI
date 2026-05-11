@@ -15,6 +15,10 @@ let authToken = localStorage.getItem("charvis_token");
 let currentUser = null;
 let STORAGE_KEY = "charvis_conversaciones_v2"; // Se actualizará al loguear
 let currentAudio = null;
+let currentAssistantMessageId = null; // Para streaming
+let isGenerating = false;
+const MAX_INPUT_CHARS = 12000;
+
 
 /* ========================= */
 /* INICIO */
@@ -32,7 +36,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 async function inicializarAuth() {
   const loginScreen = document.getElementById("login-screen");
   const appContainer = document.getElementById("app");
-  
+
   if (authToken) {
     try {
       const res = await fetch("/api/auth/me", {
@@ -54,14 +58,14 @@ async function inicializarAuth() {
   // Si no hay token válido, mostrar login y cargar config
   loginScreen.style.display = "flex";
   appContainer.style.display = "none";
-  
+
   // Iniciar efecto visual de partículas
   initAmbientCanvas();
-  
+
   try {
     const confRes = await fetch("/api/auth/config");
     const config = await confRes.json();
-    
+
     if (config.googleClientId) {
       const initGoogle = () => {
         if (window.google && window.google.accounts) {
@@ -81,7 +85,7 @@ async function inicializarAuth() {
     } else {
       document.getElementById("login-error").textContent = "Google Client ID no configurado en el servidor.";
     }
-  } catch(e) {
+  } catch (e) {
     console.error("Error obteniendo config:", e);
   }
 }
@@ -93,10 +97,10 @@ async function handleGoogleLogin(response) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ credential: response.credential })
     });
-    
+
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    
+
     authToken = data.token;
     localStorage.setItem("charvis_token", authToken);
     alCompletarLogin(data.user);
@@ -105,38 +109,57 @@ async function handleGoogleLogin(response) {
   }
 }
 
+async function handleGuestLogin() {
+  const guestUser = {
+    name: "Invitado",
+    email: "guest@charvis.ai",
+    picture: null,
+    isGuest: true
+  };
+  alCompletarLogin(guestUser);
+}
+
 function alCompletarLogin(user) {
   currentUser = user;
   document.getElementById("login-screen").style.display = "none";
   document.getElementById("app").style.display = "flex";
-  
+
   const safeName = (user.email || user.name || "default").replace(/[^a-zA-Z0-9]/g, "_");
   STORAGE_KEY = `charvis_conversaciones_v2_${safeName}`;
-  
+
   const avatar = document.getElementById("user-avatar");
   const nameLabel = document.getElementById("user-name");
-  
+
   if (user.picture) {
-    avatar.innerHTML = `<img src="${user.picture}" alt="Avatar" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">`;
+    avatar.innerHTML = `
+      <img src="${user.picture}" alt="Avatar" class="user-avatar" id="userAvatar" referrerpolicy="no-referrer" onerror="handleAvatarError(this)">
+      <div class="avatar-fallback" style="display:none;">${user.name.charAt(0).toUpperCase()}</div>
+    `;
   } else {
-    avatar.textContent = user.name.charAt(0).toUpperCase();
+    avatar.innerHTML = `
+      <div class="avatar-fallback" style="display:flex;">${user.name.charAt(0).toUpperCase()}</div>
+    `;
   }
   nameLabel.textContent = user.name;
-  
+
   cargarConversaciones();
   iniciarConversaciones();
-  conectarWebSocket();
+  if (!user.isGuest) {
+    conectarWebSocket();
+  } else {
+    mostrarAvisoTemporal("Modo invitado: Algunas funciones están limitadas.");
+  }
   renderizarConversacion(obtenerConversacionActiva());
 }
 
 async function cerrarSesion() {
-  if (authToken) {
+  if (authToken && currentUser && !currentUser.isGuest) {
     try {
       await fetch("/api/auth/logout", {
         method: "POST",
         headers: { "Authorization": `Bearer ${authToken}` }
       });
-    } catch (e) {}
+    } catch (e) { }
   }
   authToken = null;
   currentUser = null;
@@ -189,14 +212,18 @@ function conectarWebSocket() {
   }
 }
 
-function actualizarEstadoConexion(conectado) {
+function actualizarEstadoConexion(conectado, credits = null) {
   const status = document.getElementById("connection-status");
-
   if (!status) return;
 
   status.classList.toggle("offline", !conectado);
-
   const text = status.querySelector("span:last-child");
+
+  if (credits !== null) {
+    status.classList.add("credits-pill");
+    status.innerHTML = `<span class="credit-icon">🪙</span> <span>${credits} Créditos</span>`;
+    return;
+  }
 
   if (text) {
     text.textContent = conectado ? "Conectado" : "Conectando";
@@ -212,6 +239,11 @@ function manejarMensajeServidor(data) {
     return;
   }
 
+  // Actualizar créditos si vienen en el mensaje
+  if (msg.credits !== undefined) {
+    actualizarEstadoConexion(true, msg.credits);
+  }
+
   const conversationId = msg.conversationId || activeConversationId;
 
   if (conversationId && conversationId !== activeConversationId) {
@@ -220,18 +252,39 @@ function manejarMensajeServidor(data) {
   }
 
   if (msg.type === "mensaje" || msg.type === "respuesta") {
+    setGeneratingState(false);
+    if (currentAssistantMessageId) {
+      const messageEl = document.getElementById(currentAssistantMessageId);
+      if (messageEl) {
+        const textEl = messageEl.querySelector(".msg-text");
+        const finalTexto = msg.texto || msg.content || "";
+        textEl.setAttribute("data-raw", finalTexto);
+        textEl.innerHTML = markdownToHtml(finalTexto);
+        currentAssistantMessageId = null;
+        return;
+      }
+    }
     const rol = normalizarRol(msg.rol || "charvis");
     agregarMensaje(rol, msg.texto || msg.content || "");
     return;
   }
 
   if (msg.type === "error") {
+    setGeneratingState(false);
     agregarError(msg.texto || msg.mensaje || "Ocurrió un error.");
+    return;
+  }
+
+  if (msg.type === "delta") {
+    manejarDeltaStreaming(msg.texto || "");
     return;
   }
 
   if (msg.type === "estado") {
     mostrarEstadoTemporal(msg.valor || "pensando");
+    if (msg.valor === "escribiendo" || msg.valor === "razonando") {
+      setGeneratingState(true);
+    }
     return;
   }
 
@@ -243,7 +296,7 @@ function manejarMensajeServidor(data) {
       if (currentAudio) currentAudio.pause();
       currentAudio = new Audio(url);
       currentAudio.onended = () => URL.revokeObjectURL(url);
-      currentAudio.play().catch(() => {});
+      currentAudio.play().catch(() => { });
     } catch (e) { /* ignorar */ }
     return;
   }
@@ -257,9 +310,62 @@ function manejarMensajeServidor(data) {
   }
 
   if (msg.type === "streamTerminado") {
-    // El mensaje final ya llega como "mensaje", nada extra que hacer
+    setGeneratingState(false);
+    currentAssistantMessageId = null;
     return;
   }
+}
+
+function manejarDeltaStreaming(texto) {
+  if (!currentAssistantMessageId) {
+    agregarMensaje("charvis", "", [], true);
+  }
+
+  const messageEl = document.getElementById(currentAssistantMessageId);
+  if (!messageEl) return;
+
+  const textEl = messageEl.querySelector(".msg-text");
+  if (!textEl) return;
+
+  // Acumular texto
+  const currentText = textEl.getAttribute("data-raw") || "";
+  const newText = currentText + texto;
+  textEl.setAttribute("data-raw", newText);
+  textEl.innerHTML = markdownToHtml(newText);
+
+  // Auto scroll
+  const chat = document.getElementById("chat");
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function setGeneratingState(generating) {
+  isGenerating = generating;
+  actualizarBotonesEnvio();
+}
+
+function actualizarBotonesEnvio() {
+  const btns = document.querySelectorAll(".send-btn");
+  btns.forEach(btn => {
+    if (isGenerating) {
+      btn.innerHTML = "■";
+      btn.classList.add("stop-btn");
+      btn.onclick = (e) => { e.preventDefault(); abortGeneration(); };
+      btn.title = "Detener generación";
+    } else {
+      btn.innerHTML = "↑";
+      btn.classList.remove("stop-btn");
+      btn.onclick = (e) => { e.preventDefault(); const isHero = btn.closest('.prompt-box')?.id === 'hero-input-container'; isHero ? enviarDesdeHero() : enviarMensaje(); };
+      btn.title = "Enviar mensaje";
+    }
+  });
+}
+
+function abortGeneration() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "abort", conversationId: activeConversationId }));
+  }
+  setGeneratingState(false);
+  mostrarAvisoTemporal("Generación cancelada.");
 }
 
 function guardarMensajeServidorEnConversacion(conversationId, msg) {
@@ -285,19 +391,37 @@ function guardarMensajeServidorEnConversacion(conversationId, msg) {
 /* CONVERSACIONES */
 /* ========================= */
 
+function generarNombreSiguiente() {
+  const numeros = conversaciones
+    .map(c => {
+      const match = c.titulo.match(/^Conversación (\d+)$/);
+      return match ? parseInt(match[1], 10) : null;
+    })
+    .filter(n => n !== null)
+    .sort((a, b) => a - b);
+
+  let proximo = 1;
+  for (let n of numeros) {
+    if (n === proximo) {
+      proximo++;
+    } else if (n > proximo) {
+      break;
+    }
+  }
+  return `Conversación ${proximo}`;
+}
+
 function crearConversacion(nombre = null) {
-  conversationCount += 1;
+  const titulo = nombre || generarNombreSiguiente();
 
   const conversacion = {
-    id: `conv-${Date.now()}-${conversationCount}`,
-    titulo: nombre || `Conversación ${conversationCount}`,
+    id: `conv-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    titulo: titulo,
     mensajes: []
   };
 
   conversaciones.push(conversacion);
-
   guardarConversaciones();
-
   return conversacion;
 }
 
@@ -394,10 +518,16 @@ function actualizarSidebarConversaciones() {
 
     const item = document.createElement("button");
     item.type = "button";
-    item.className = "history-item";
-    item.classList.toggle("active", conversacion.id === activeConversationId);
-    item.textContent = conversacion.titulo;
+    item.className = "conversation";
+    if (conversacion.id === activeConversationId) item.classList.add("active");
     item.onclick = () => seleccionarConversacion(conversacion.id);
+
+    const dot = document.createElement("span");
+    dot.className = "conversation-dot";
+    item.appendChild(dot);
+
+    const textNode = document.createTextNode(" " + conversacion.titulo);
+    item.appendChild(textNode);
 
     const del = document.createElement("button");
     del.type = "button";
@@ -483,107 +613,87 @@ function cargarConversaciones() {
 /* ========================= */
 
 function obtenerPantallaBienvenida() {
+  const userName = currentUser ? currentUser.name.split(' ')[0] : '';
+  const title = userName ? `Hola, ${userName}` : "Hola, ¿en qué puedo ayudarte?";
+
   return `
-    <div id="welcome-screen" class="welcome-screen">
-      <div class="plan-pill">
-        <span>Charvis AI</span>
-        <button type="button" onclick="accionProximamente('Actualizar plan')">
-          Actualizar
-        </button>
-      </div>
+    <div class="upgrade-pill">
+      <span>Charvis AI</span>
+      <button type="button" onclick="accionProximamente('Actualizar plan')">Actualizar</button>
+    </div>
 
-      <div class="hero-brand">
-        <div class="hero-mark">✦</div>
-        <h1>Hola, ¿en qué puedo ayudarte?</h1>
-      </div>
+    <h1>
+      <span>✦</span>
+      ${title}
+    </h1>
 
-      <div class="hero-composer-card">
-        <textarea
-          id="hero-input"
-          placeholder="Preguntale algo a Charvis..."
-          rows="1"
-          autocomplete="off"
-          spellcheck="false"
-          wrap="soft"
-          oninput="sincronizarInputs(this.value); autoResizeTextarea(this)"
-        ></textarea>
+    <div class="prompt-box">
+      <textarea
+        id="hero-input"
+        placeholder="Pregúntale algo a Charvis..."
+        rows="1"
+        autocomplete="off"
+        spellcheck="false"
+        wrap="soft"
+        oninput="sincronizarInputs(this.value); autoResizeTextarea(this)"
+      ></textarea>
 
-        <div class="hero-actions">
-          <div class="hero-actions-left">
-            <button
-              type="button"
-              class="icon-action"
-              onclick="document.getElementById('file-input').click()"
-              title="Adjuntar archivo"
-            >
-              +
-            </button>
+      <div class="prompt-actions">
+        <div class="prompt-actions-left">
+          <button type="button" class="round-btn" onclick="document.getElementById('file-input').click()" title="Adjuntar archivo">+</button>
 
-            <button
-              type="button"
-              class="tool-button"
-              onclick="toggleModoRazonamiento()"
-            >
-              Herramientas
-            </button>
-          </div>
+          <button type="button" class="tool-btn" id="hero-reasoning-toggle" onclick="toggleModoRazonamiento()">
+            Herramientas
+          </button>
+        </div>
 
-          <div class="hero-actions-right">
-            <button
-              type="button"
-              class="mode-button"
-              onclick="toggleModoRazonamiento()"
-              id="mode-button"
-            >
-              Normal
-            </button>
+        <div class="prompt-actions-right">
+          <button type="button" class="mode-btn" id="hero-mode-button" onclick="toggleModoRazonamiento()">
+            Normal
+          </button>
 
-            <button
-              type="button"
-              class="voice-button"
-              id="hero-voice-btn"
-              onclick="toggleGrabacion()"
-              title="Grabar voz"
-            >
-              🎙
-            </button>
+          <button type="button" class="round-btn small voice-btn" id="hero-voice-btn" onclick="toggleGrabacion()" title="Grabar voz">
+            🎙
+          </button>
 
-            <button
-              type="button"
-              class="send-mini-button"
-              onclick="enviarDesdeHero()"
-              title="Enviar mensaje"
-              aria-label="Enviar mensaje"
-            >
-              ↑
-            </button>
-          </div>
+          <button type="button" class="send-btn" onclick="enviarDesdeHero()" title="Enviar mensaje">
+            ↑
+          </button>
         </div>
       </div>
+    </div>
 
-      <div class="quick-actions">
-        <button type="button" onclick="insertSuggestion('Ayudame a escribir código limpio y optimizado')">
-          Código
-        </button>
-
-        <button type="button" onclick="insertSuggestion('Ayudame a escribir un texto profesional')">
-          Escribir
-        </button>
-
-        <button type="button" onclick="insertSuggestion('Explicame este tema paso a paso')">
-          Aprender
-        </button>
-
-        <button type="button" onclick="insertSuggestion('Organizá mis ideas y tareas pendientes')">
-          Asuntos personales
-        </button>
-
-        <button type="button" onclick="toggleModoRazonamiento()">
-          Razonamiento
-        </button>
-      </div>
+    <div class="suggestions">
+      <button type="button" id="ctx-codigo" onclick="selectContext('codigo', 'Ayúdame a escribir código limpio y optimizado')">Código</button>
+      <button type="button" id="ctx-escribir" onclick="selectContext('escribir', 'Ayúdame a redactar un texto profesional')">Escribir</button>
+      <button type="button" id="ctx-aprender" onclick="selectContext('aprender', 'Explícame este tema paso a paso')">Aprender</button>
+      <button type="button" id="ctx-personal" onclick="selectContext('personal', 'Organiza mis ideas y tareas pendientes')">Asuntos personales</button>
+      <button type="button" id="ctx-razonamiento" onclick="toggleModoRazonamiento()">Razonamiento</button>
     </div>
   `;
+}
+
+let activeContext = null;
+
+function selectContext(contextId, suggestion) {
+  // Toggle visual state
+  const buttons = document.querySelectorAll('.suggestions button');
+  buttons.forEach(btn => btn.classList.remove('active'));
+
+  if (activeContext === contextId) {
+    activeContext = null;
+    mostrarAvisoTemporal("Contexto desactivado.");
+  } else {
+    activeContext = contextId;
+    const activeBtn = document.getElementById(`ctx-${contextId}`);
+    if (activeBtn) activeBtn.classList.add('active');
+
+    // Also insert suggestion if provided
+    if (suggestion) {
+      insertSuggestion(suggestion);
+    }
+    mostrarAvisoTemporal(`Contexto: ${contextId.charAt(0).toUpperCase() + contextId.slice(1)} activado.`);
+  }
 }
 
 function mostrarPantallaBienvenida() {
@@ -592,16 +702,17 @@ function mostrarPantallaBienvenida() {
   if (!chat) return;
 
   chat.innerHTML = obtenerPantallaBienvenida();
+  chat.classList.add("is-welcome");
   document.body.classList.add("welcome-active");
 
   sincronizarBotonesModo();
 }
 
 function removeWelcome() {
-  const welcome = document.getElementById("welcome-screen");
-
-  if (welcome) {
-    welcome.remove();
+  const chat = document.getElementById("chat");
+  if (chat && chat.classList.contains("is-welcome")) {
+    chat.innerHTML = "";
+    chat.classList.remove("is-welcome");
   }
 
   document.body.classList.remove("welcome-active");
@@ -652,10 +763,20 @@ function enviarMensaje(event) {
 }
 
 function enviarDesdeHero() {
+  if (isGenerating) {
+    abortGeneration();
+    return;
+  }
+
   const texto = obtenerTextoActual();
 
   if (!texto && archivosAdjuntos.length === 0) {
     mostrarAvisoTemporal("Escribí un mensaje o adjuntá archivos antes de enviar.");
+    return;
+  }
+
+  if (texto.length > MAX_INPUT_CHARS) {
+    mostrarAvisoTemporal("Tu mensaje es demasiado largo. Por favor, reducilo.");
     return;
   }
 
@@ -700,7 +821,7 @@ function handleFiles(files) {
 function renderFilePreviews() {
   const isWelcome = document.body.classList.contains("welcome-active");
   const composer = isWelcome ? document.querySelector('.hero-composer-card') : document.querySelector('.composer-shell');
-  
+
   if (!composer) return;
 
   // Clean up existing previews in both places to avoid duplicates
@@ -779,11 +900,24 @@ function enviarAlServidor(texto, adjuntos = []) {
     mensaje: texto,
     conversationId: activeConversationId,
     modo: modoRazonamientoActivo ? "razonamiento" : "normal",
-    adjuntos: adjuntos
+    contexto: activeContext,
+    adjuntos: adjuntos,
+    isGuest: currentUser?.isGuest || false,
+    userId: currentUser?.email || "anon",
+    audioActivo: audioActivo
   };
 
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(payload));
+    setGeneratingState(true);
+    return;
+  }
+
+  if (currentUser && currentUser.isGuest) {
+    mostrarAvisoTemporal("El modo invitado no puede enviar mensajes al servidor real.");
+    setTimeout(() => {
+      agregarMensaje("charvis", "¡Hola! Como invitado, puedo mostrarte la interfaz, pero para hablar conmigo necesitas iniciar sesión con Google.");
+    }, 1000);
     return;
   }
 
@@ -885,17 +1019,31 @@ function sincronizarBotonesModo() {
   const label = modoRazonamientoActivo ? "Razonamiento" : "Normal";
 
   const modeButton = document.getElementById("mode-button");
+  const heroModeButton = document.getElementById("hero-mode-button");
   const reasoningToggle = document.getElementById("reasoning-toggle");
+  const heroReasoningToggle = document.getElementById("hero-reasoning-toggle");
   const activeModeLabel = document.getElementById("active-mode-label");
+
+  const ctxBtn = document.getElementById("ctx-razonamiento");
 
   if (modeButton) {
     modeButton.textContent = label;
     modeButton.classList.toggle("active", modoRazonamientoActivo);
   }
+  if (heroModeButton) {
+    heroModeButton.textContent = label;
+    heroModeButton.classList.toggle("active", modoRazonamientoActivo);
+  }
 
   if (reasoningToggle) {
-    reasoningToggle.textContent = label;
     reasoningToggle.classList.toggle("active", modoRazonamientoActivo);
+  }
+  if (heroReasoningToggle) {
+    heroReasoningToggle.classList.toggle("active", modoRazonamientoActivo);
+  }
+
+  if (ctxBtn) {
+    ctxBtn.classList.toggle("active", modoRazonamientoActivo);
   }
 
   if (activeModeLabel) {
@@ -956,19 +1104,28 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-function agregarMensaje(rol, texto, adjuntos = []) {
+function agregarMensaje(rol, texto, adjuntos = [], isStreaming = false) {
   const chat = document.getElementById("chat");
-
   if (!chat) return;
 
   removeWelcome();
 
+  const msgId = `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const rolNorm = normalizarRol(rol);
+
+  if (isStreaming && rolNorm === "charvis") {
+    currentAssistantMessageId = msgId;
+  }
+
   const message = document.createElement("div");
-  message.className = `message ${normalizarRol(rol)}`;
+  message.className = `message ${rolNorm}`;
+  message.id = msgId;
+  if (isStreaming) message.classList.add("streaming");
 
   const text = document.createElement("div");
   text.className = "msg-text";
-  const rolNorm = normalizarRol(rol);
+  text.setAttribute("data-raw", texto || "");
+
   if (rolNorm === "charvis") {
     text.innerHTML = markdownToHtml(texto || "");
   } else {
@@ -976,6 +1133,7 @@ function agregarMensaje(rol, texto, adjuntos = []) {
   }
 
   message.appendChild(text);
+
 
   // Agregar previews de archivos adjuntos
   if (adjuntos && adjuntos.length > 0) {
@@ -1030,10 +1188,10 @@ function agregarMensaje(rol, texto, adjuntos = []) {
 
 function agregarError(texto) {
   const chat = document.getElementById("chat");
-
   if (!chat) return;
 
   removeWelcome();
+  setGeneratingState(false);
 
   const message = document.createElement("div");
   message.className = "message error";
@@ -1042,7 +1200,13 @@ function agregarError(texto) {
   text.className = "msg-text";
   text.textContent = texto || "Ocurrió un error.";
 
+  const retryBtn = document.createElement("button");
+  retryBtn.className = "retry-btn";
+  retryBtn.innerHTML = "<span>↻</span> Reintentar";
+  retryBtn.onclick = retryLastMessage;
+
   message.appendChild(text);
+  message.appendChild(retryBtn);
   chat.appendChild(message);
 
   chat.scrollTop = chat.scrollHeight;
@@ -1051,6 +1215,21 @@ function agregarError(texto) {
     tipo: "error",
     texto
   });
+}
+
+function retryLastMessage() {
+  const conversacion = obtenerConversacionActiva();
+  if (!conversacion || conversacion.mensajes.length === 0) return;
+
+  // Buscar el último mensaje del usuario
+  const ultimoUsuario = [...conversacion.mensajes].reverse().find(m => m.rol === "usuario");
+
+  if (ultimoUsuario) {
+    mostrarAvisoTemporal("Reintentando...");
+    enviarAlServidor(ultimoUsuario.texto, ultimoUsuario.adjuntos || []);
+  } else {
+    mostrarAvisoTemporal("No hay mensajes previos para reintentar.");
+  }
 }
 
 function normalizarRol(rol) {
@@ -1228,17 +1407,19 @@ function toggleAudio() {
   audioActivo = !audioActivo;
   const btn = document.getElementById("audio-toggle");
   if (btn) {
-    btn.textContent = audioActivo ? "🔊" : "🔇";
+    btn.classList.toggle("muted", !audioActivo);
+    const icon = btn.querySelector('.audio-icon');
+    if (icon) icon.textContent = audioActivo ? "🔊" : "🔇";
     btn.title = audioActivo ? "Voz activada" : "Voz silenciada";
   }
-  
+
   if (!audioActivo) {
     speechSynthesis.cancel();
     if (currentAudio) {
       currentAudio.pause();
     }
   }
-  
+
   mostrarAvisoTemporal(audioActivo ? "Voz activada" : "Voz silenciada");
 }
 
@@ -1353,12 +1534,12 @@ function initAmbientCanvas() {
   const canvas = document.getElementById('ambient-canvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
-  
+
   let width = canvas.width = canvas.offsetWidth;
   let height = canvas.height = canvas.offsetHeight;
-  
+
   let mouse = { x: width / 2, y: height / 2, moved: false };
-  
+
   canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
     mouse.x = e.clientX - rect.left;
@@ -1398,7 +1579,7 @@ function initAmbientCanvas() {
 
   function render() {
     ctx.clearRect(0, 0, width, height);
-    
+
     // Fondo base oscuro premium
     ctx.fillStyle = '#05050A';
     ctx.fillRect(0, 0, width, height);
@@ -1408,13 +1589,13 @@ function initAmbientCanvas() {
     orbs.forEach((orb, i) => {
       // El orbe principal (índice 0) o índice 1 siguen al mouse más intensamente
       if ((i === 0 || i === 1) && mouse.moved) {
-        orb.targetX = mouse.x + (i===1 ? 100 * Math.cos(orb.angle) : 0);
-        orb.targetY = mouse.y + (i===1 ? 100 * Math.sin(orb.angle) : 0);
+        orb.targetX = mouse.x + (i === 1 ? 100 * Math.cos(orb.angle) : 0);
+        orb.targetY = mouse.y + (i === 1 ? 100 * Math.sin(orb.angle) : 0);
       } else {
         // Movimiento caótico y fluido
         orb.targetX += orb.vx;
         orb.targetY += orb.vy;
-        
+
         if (orb.targetX < -orb.radius || orb.targetX > width + orb.radius) orb.vx *= -1;
         if (orb.targetY < -orb.radius || orb.targetY > height + orb.radius) orb.vy *= -1;
       }
@@ -1428,11 +1609,11 @@ function initAmbientCanvas() {
       // Dibuja el gradiente radial intenso
       const grad = ctx.createRadialGradient(orb.x, orb.y, 0, orb.x, orb.y, orb.radius);
       // Extraemos el RGB de los hex
-      let hex = orb.color.replace('#','');
-      let r = parseInt(hex.substring(0,2), 16);
-      let g = parseInt(hex.substring(2,4), 16);
-      let b = parseInt(hex.substring(4,6), 16);
-      
+      let hex = orb.color.replace('#', '');
+      let r = parseInt(hex.substring(0, 2), 16);
+      let g = parseInt(hex.substring(2, 4), 16);
+      let b = parseInt(hex.substring(4, 6), 16);
+
       grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.8)`);
       grad.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, 0.3)`);
       grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);

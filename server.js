@@ -8,8 +8,15 @@ const https      = require("https");
 const crypto     = require("crypto");
 const Groq       = require("groq-sdk");
 
+const { buildSystemPrompt } = require("./lib/ai/prompts");
+const { getUserCredits, hasEnoughCredits, consumeCredits } = require("./lib/credits");
+const { estimateTokens, buildModelContext, MAX_INPUT_CHARS, MAX_OUTPUT_TOKENS } = require("./lib/ai/tokens");
+
 const { recortarHistorial } = require("./historial");
 const { esEco } = require("./eco");
+
+// --- Abort Controllers para cancelar generación ---
+const abortControllers = new Map();
 
 if (!process.env.GROQ_API_KEY) throw new Error("Falta GROQ_API_KEY en .env");
 
@@ -46,6 +53,7 @@ async function verificarClaveGroq() {
     console.warn("⚠️  No se pudo verificar la clave de Groq:", error.message);
   }
 }
+
 const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY || "";
 const VOICE_ID      = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
 const PORT          = process.env.PORT || 3000;
@@ -139,17 +147,7 @@ app.post("/api/auth/logout", (req, res) => {
   sessions.delete(token);
   res.json({ ok: true });
 });
-function instruccionesCharvis() {
-  return (
-    "Sos Charvis, un asistente de IA avanzado, preciso y sofisticado, inspirado en JARVIS de Iron Man. " +
-    "Respondes con elegancia, inteligencia practica y una leve actitud britanica. " +
-    "Usas espanol rioplatense. Se claro, util y directo. " +
-    "Cuando recibas archivos o imagenes, razona sobre su contenido y responde exactamente lo que el usuario pida. " +
-    "No inventes datos que no esten en el documento o foto. Si algo no se ve o no esta en el texto extraido, decilo. " +
-    "Cuando un grafico ayude a explicar datos numericos, podes agregar al final un bloque ```chart con JSON valido: " +
-    "{\"title\":\"Titulo\",\"labels\":[\"A\",\"B\"],\"values\":[10,20],\"unit\":\"%\"}. Usalo solo si suma claridad."
-  );
-}
+
 
 function modoValido(modo) {
   return modo === "razonamiento" ? "razonamiento" : "normal";
@@ -312,31 +310,22 @@ function contenidoComoTexto(content) {
   return String(content || "");
 }
 
-function prepararMensajes(historial, modo) {
-  if (modo !== "razonamiento") return historial;
+function prepararMensajes(historial, modo, selectedContext) {
+  const systemPrompt = buildSystemPrompt(selectedContext, modo);
+  
+  // Reemplazamos el primer mensaje (sistema) o lo agregamos si no existe
+  const mensajes = [...historial];
+  if (mensajes.length > 0 && mensajes[0].role === "system") {
+    mensajes[0] = { role: "system", content: systemPrompt };
+  } else {
+    mensajes.unshift({ role: "system", content: systemPrompt });
+  }
 
-  const sistemaBase = contenidoComoTexto(historial[0]?.content || instruccionesCharvis());
-  const sistemaRazonamiento = sistemaBase + "\n\n" +
-    "=== MODO RAZONAMIENTO PROFUNDO ACTIVADO ===\n" +
-    "Reasoning: high\n\n" +
-    "Antes de responder, aplica el siguiente proceso interno:\n" +
-    "1. DESCOMPOSICION: Divide el problema en subproblemas concretos.\n" +
-    "2. SUPUESTOS: Lista todos los supuestos implicitos. Cuestiona cada uno.\n" +
-    "3. PERSPECTIVAS: Considera al menos dos enfoques distintos para resolverlo.\n" +
-    "4. VALIDACION: Verifica tu razonamiento paso a paso. Detecta contradicciones.\n" +
-    "5. SINTESIS: Construye la respuesta final solo con lo que puedas sostener.\n\n" +
-    "Entrega UNICAMENTE la respuesta final: clara, precisa y fundamentada. " +
-    "Sin mencionar el proceso interno. Sin frases introductorias vagas. " +
-    "Si el problema involucra codigo, incluye el codigo completo y funcional. " +
-    "Si involucra datos numericos, muestra los calculos. " +
-    "Si hay incertidumbre real, indicala con precision.";
-
-  const mensajes = [
-    { role: "system", content: sistemaRazonamiento },
-    ...historial.slice(1).map((m) => ({ ...m, content: contenidoComoTexto(m.content) }))
-  ];
-
-  return mensajes;
+  // Aseguramos que el contenido sea texto plano para el modelo
+  return mensajes.map((m) => ({ 
+    ...m, 
+    content: contenidoComoTexto(m.content) 
+  }));
 }
 
 function elevenLabsTTS(text) {
@@ -374,25 +363,32 @@ function elevenLabsTTS(text) {
 }
 
 function crearHistorial() {
-  return [{ role: "system", content: instruccionesCharvis() }];
+  return [];
 }
 
 wss.on("connection", (ws, req) => {
-  // Verificar token de sesión del WebSocket (si se envía)
+  // Verificar token de sesión del WebSocket
   const url = new URL(req.url, `http://${req.headers.host}`);
   const token = url.searchParams.get("token") || "";
+  let session = null;
   if (token) {
-    const session = verificarSesion(token);
-    if (!session) {
+    session = verificarSesion(token);
+    if (!session && token !== "guest") {
       ws.close(1008, "No autorizado");
       return;
     }
   }
-  // Si no hay token se permite la conexión (compatibilidad)
 
   const historiales = new Map();
   const procesandoPorConversacion = new Set();
   let conversationIdActivo = "default";
+
+  function obtenerUserInfo() {
+    return {
+      userId: session ? session.email : (token === "guest" ? "guest" : "anon"),
+      isGuest: token === "guest" || (session && session.isGuest)
+    };
+  }
 
   function obtenerConversationId(msg = {}) {
     return String(msg.conversationId || "default").slice(0, 120);
@@ -423,7 +419,14 @@ wss.on("connection", (ws, req) => {
   }
 
   function send(obj) {
-    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
+    if (ws.readyState === ws.OPEN) {
+      // Si el mensaje es una respuesta final o un error, adjuntamos créditos actualizados
+      if (obj.type === "mensaje" || obj.type === "streamTerminado" || obj.type === "error") {
+        const { userId, isGuest } = obtenerUserInfo();
+        obj.credits = getUserCredits(userId, isGuest);
+      }
+      ws.send(JSON.stringify(obj));
+    }
   }
 
   async function enviarFrase(frase) {
@@ -441,6 +444,7 @@ wss.on("connection", (ws, req) => {
 
   async function procesarConLLM(conversationId, historial, opciones = {}) {
     const modo = modoValido(opciones.modo);
+    const contexto = opciones.contexto || null;
 
     // Detector de complejidad
     let ultimoMensajeUsuario = historial.filter(m => m.role === "user").pop()?.content || "";
@@ -480,6 +484,9 @@ wss.on("connection", (ws, req) => {
       // Guardar en historial
       historial.push({role: "assistant", content: respuestaFinal});
       guardarHistorial(conversationId, historial);
+
+      // Descontar créditos
+      consumeCredits(opciones.userId || "anon", 1, opciones.isGuest);
 
     } catch (error) {
       send({type: "error", texto: "Error en el proceso de razonamiento: " + error.message, conversationId});
@@ -601,6 +608,8 @@ wss.on("connection", (ws, req) => {
 
   async function ejecutarLLMDirecto(conversationId, historial, opciones = {}) {
     const modo = modoValido(opciones.modo);
+    const selectedContext = opciones.contexto || null;
+
     send({
       type: "estado",
       valor: modo === "razonamiento" ? "razonando" : "pensando",
@@ -610,107 +619,118 @@ wss.on("connection", (ws, req) => {
     const tieneImagenes = historial.some(m => Array.isArray(m.content) && m.content.some(c => c.type === "image_url"));
     const modelToUse = tieneImagenes ? VISION_MODEL : (modo === "razonamiento" ? REASONING_MODEL : CHAT_MODEL);
 
-    const request = {
-      model: modelToUse,
-      messages: prepararMensajes(historial, modo),
-      max_tokens: modo === "razonamiento" && !tieneImagenes ? 7000 : 700,
-      temperature: modo === "razonamiento" && !tieneImagenes ? 0.45 : 0.65,
-      stream: true,
-    };
+    // --- Preparar contexto optimizado ---
+    const contextoLimitado = buildModelContext(historial);
+    const mensajesModel = prepararMensajes(contextoLimitado, modo, selectedContext);
 
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + GROQ_KEY,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(request)
-    });
+    // --- Configurar AbortController ---
+    const controller = new AbortController();
+    abortControllers.set(conversationId, controller);
 
-    if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error("Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env.");
+    try {
+      const request = {
+        model: modelToUse,
+        messages: mensajesModel,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        temperature: modo === "razonamiento" ? 0.4 : 0.7,
+        stream: true,
+      };
+
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + GROQ_KEY,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(request),
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 401) throw new Error("API Key inválida.");
+        if (response.status === 429) throw new Error("Límite de velocidad excedido (Rate limit).");
+        throw new Error(errorData.error?.message || `Error Groq: ${response.status}`);
       }
-      if (response.status === 413) {
-        throw new Error("El archivo adjunto o el texto es demasiado largo para procesar. Por favor, intenta con un archivo más pequeño o un fragmento más corto.");
-      }
-      if (response.status === 429) {
-        throw new Error("La red está muy ocupada o excediste el límite de peticiones. Por favor, espera un momento e intenta de nuevo.");
-      }
-      throw new Error(`Groq error: ${response.status}`);
-    }
 
-    const stream = response.body;
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
 
-    let respuestaCompleta = "";
-    let bufferTexto = "";
-    const CORTE = /[.!?]+\s*/;
+      let respuestaCompleta = "";
+      let bufferTexto = "";
+      const CORTE = /[.!?]+\s*/;
 
-    send({
-      type: "estado",
-      valor: "hablando",
-      conversationId
-    });
+      send({ type: "estado", valor: "escribiendo", conversationId });
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
 
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') continue;
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
 
-          try {
-            const parsed = JSON.parse(data);
-            const token = parsed.choices[0]?.delta?.content || "";
-            if (!token) continue;
+            try {
+              const parsed = JSON.parse(data);
+              const token = parsed.choices[0]?.delta?.content || "";
+              if (!token) continue;
 
-            respuestaCompleta += token;
-            bufferTexto += token;
+              respuestaCompleta += token;
+              bufferTexto += token;
 
-            if (CORTE.test(bufferTexto) && bufferTexto.length > 15) {
-              const match = bufferTexto.match(CORTE);
-              const idx = bufferTexto.indexOf(match[0]) + match[0].length;
-              const frase = bufferTexto.slice(0, idx).trim();
-              bufferTexto = bufferTexto.slice(idx);
-              if (frase) {
-                enviarFrase(frase).catch((err) => {
-                  console.error("[TTS ERROR]", err);
-                });
+              // Streaming al frontend (letra por letra o chunk)
+              send({
+                type: "delta",
+                texto: token,
+                conversationId
+              });
+
+              // TTS (opcional, por frases)
+              const audioHabilitado = opciones.audioActivo !== false && !!ELEVENLABS_KEY;
+              if (audioHabilitado && CORTE.test(bufferTexto) && bufferTexto.length > 25) {
+                const match = bufferTexto.match(CORTE);
+                const idx = bufferTexto.indexOf(match[0]) + match[0].length;
+                const frase = bufferTexto.slice(0, idx).trim();
+                bufferTexto = bufferTexto.slice(idx);
+                if (frase) {
+                  enviarFrase(frase).catch(() => {});
+                }
               }
-            }
-          } catch (e) {
-            // Ignorar chunks malformados
+            } catch (e) {}
           }
         }
       }
+
+      // Enviar resto de audio si quedó algo
+      const audioFinal = opciones.audioActivo !== false && !!ELEVENLABS_KEY;
+      if (audioFinal && bufferTexto.trim()) {
+        enviarFrase(bufferTexto.trim()).catch(() => {});
+      }
+
+      send({ type: "streamTerminado", conversationId });
+
+      // Guardar en historial
+      historial.push({ role: "assistant", content: respuestaCompleta });
+      guardarHistorial(conversationId, historial);
+
+      // Descontar créditos (1 por mensaje en beta)
+      const userId = opciones.userId || "anon";
+      consumeCredits(userId, 1, opciones.isGuest);
+
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        send({ type: "error", mensaje: "Generación detenida por el usuario.", conversationId, code: "CANCELLED" });
+      } else {
+        console.error("[GROQ ERROR]", err);
+        send({ type: "error", mensaje: err.message || "Error en la generación.", conversationId });
+      }
+    } finally {
+      abortControllers.delete(conversationId);
     }
-
-    if (bufferTexto.trim()) {
-      enviarFrase(bufferTexto.trim()).catch((err) => {
-        console.error("[TTS ERROR]", err);
-      });
-    }
-
-    send({
-      type: "streamTerminado",
-      conversationId
-    });
-
-    historial.push({ role: "assistant", content: respuestaCompleta });
-    guardarHistorial(conversationId, historial);
-    send({
-      type: "mensaje",
-      rol: "charvis",
-      texto: respuestaCompleta,
-      conversationId
-    });
   }
 
   ws.on("message", async (data, isBinary) => {
@@ -760,6 +780,17 @@ wss.on("connection", (ws, req) => {
     } else {
       try {
         const msg = JSON.parse(data.toString());
+        
+        // --- MANEJO DE ABORTO ---
+        if (msg.type === "abort") {
+          const conversationId = obtenerConversationId(msg);
+          if (abortControllers.has(conversationId)) {
+            abortControllers.get(conversationId).abort();
+            finalizarProcesamiento(conversationId);
+          }
+          return;
+        }
+
         if (msg.type === "limpiar") {
           const conversationId = obtenerConversationId(msg);
 
@@ -773,16 +804,31 @@ wss.on("connection", (ws, req) => {
           return;
         }
         if (msg.type === "texto") {
-          if (msg.conversationId) {
-            conversationIdActivo = obtenerConversationId(msg);
-          }
           const conversationId = obtenerConversationId(msg);
+          if (msg.conversationId) conversationIdActivo = conversationId;
 
           if (estaProcesando(conversationId)) return;
+
+          // --- VALIDACIONES DE BETA ---
+          const { userId, isGuest } = obtenerUserInfo();
+          const textoUsuario = String(msg.texto || "").trim();
+
+          // 1. Validar longitud
+          if (textoUsuario.length > MAX_INPUT_CHARS) {
+            send({ type: "error", mensaje: "Tu mensaje es demasiado largo. Por favor, reducilo e intentá nuevamente.", conversationId });
+            return;
+          }
+
+          // 2. Verificar créditos
+          if (!hasEnoughCredits(userId, 1, isGuest)) {
+            send({ type: "error", mensaje: "Créditos insuficientes. Por favor, actualizá tu plan para continuar.", conversationId, code: "OUT_OF_CREDITS" });
+            return;
+          }
+
           iniciarProcesamiento(conversationId);
+
           try {
             const modo = modoValido(msg.modo);
-            const textoUsuario = String(msg.texto || "").trim();
             let contenidoUsuario = textoUsuario || "Analiza los archivos adjuntos y dame una respuesta útil.";
 
             // Procesar adjuntos
@@ -809,26 +855,29 @@ wss.on("connection", (ws, req) => {
             if (tieneImagenes) {
               const mensajeVision = {
                 role: "user",
-                content: [
-                  {type: "text", text: contenidoUsuario}
-                ]
+                content: [{ type: "text", text: contenidoUsuario }]
               };
 
               msg.adjuntos.filter(a => a.tipo === 'imagen').forEach(img => {
                 mensajeVision.content.push({
                   type: "image_url",
-                  image_url: {url: img.dataUrl, detail: "auto"}
+                  image_url: { url: img.dataUrl, detail: "auto" }
                 });
               });
 
-              // Reemplazar el último mensaje de usuario con el formato de visión
               historial.pop();
               historial.push(mensajeVision);
             }
 
             historial = recortarHistorial(historial);
             guardarHistorial(conversationId, historial);
-            await procesarConLLM(conversationId, historial, { modo });
+            
+            await procesarConLLM(conversationId, historial, { 
+              modo, 
+              contexto: msg.contexto,
+              userId,
+              isGuest
+            });
           } catch (err) {
             console.error("[OPENAI ERROR]", err);
             if (err.message.includes("401")) {

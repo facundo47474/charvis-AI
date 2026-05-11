@@ -4,12 +4,22 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Charvis</title>
+  <title>Charvis AI</title>
+
   <link rel="stylesheet" href="style.css" />
+
+  <!-- Fuente similar a Claude -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet"
+  >
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 
 <body class="welcome-active">
+
   <!-- LOGIN SCREEN -->
   <div id="login-screen" class="login-screen" style="display:none;">
     <div class="login-left">
@@ -25,6 +35,10 @@
 
         <div id="login-google-section">
           <div id="google-btn-container" class="google-wrapper"></div>
+          <div class="login-divider"><span>o</span></div>
+          <button id="guest-login-btn" class="guest-btn" onclick="handleGuestLogin()">
+            Continuar como invitado
+          </button>
           <p id="login-error" class="login-error"></p>
         </div>
       </div>
@@ -44,90 +58,120 @@
     </div>
   </div>
 
-  <div id="app" style="display:none;">
-    <aside id="sidebar" aria-label="Menú lateral">
-      <div class="sidebar-top">
-        <button id="btn-new-chat" class="sidebar-btn" type="button" onclick="nuevaConversacion()">
-          <span class="sidebar-plus">+</span>
-          <span>Nueva conversación</span>
-        </button>
+  <div class="app" id="app" style="display:none;">
 
-        <button id="btn-sidebar-close" class="sidebar-close-btn" type="button" onclick="cerrarSidebar()"
-          title="Cerrar menú">
-          ×
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+
+      <div class="sidebar-header">
+        <button class="new-chat-btn" id="btn-new-chat" onclick="nuevaConversacion()">
+          <span>+</span>
+          Nueva conversación
         </button>
       </div>
 
-      <div class="sidebar-section-title">Conversaciones</div>
-
-      <div id="sidebar-history" class="sidebar-history"></div>
-
-      <div class="sidebar-user" id="sidebar-user">
-        <div class="avatar" id="user-avatar">?</div>
-        <span id="user-name">Usuario</span>
-        <button type="button" class="sidebar-logout-btn" onclick="cerrarSesion()" title="Cerrar sesión">⏻</button>
+      <div class="sidebar-content">
+        <p class="sidebar-title">Conversaciones</p>
+        <div id="sidebar-history" class="sidebar-history-wrapper"></div>
       </div>
-    </aside>
 
-    <div id="sidebar-backdrop" aria-hidden="true" onclick="cerrarSidebar()"></div>
-
-    <main id="main">
-      <header id="topbar">
-        <div class="topbar-left">
-          <button id="menu-toggle" type="button" onclick="toggleSidebar()" aria-label="Abrir menú">
-            ☰
-          </button>
-
-          <div class="brand-badge" aria-hidden="true">
-            ⛓
+      <div class="sidebar-footer">
+        <div class="user-card" id="sidebar-user">
+          <div id="user-avatar" class="avatar-container">
+            <!-- App.js insertará el avatar aquí -->
           </div>
 
-          <div class="topbar-title">
-            <strong>Charvis</strong>
-            <span id="active-mode-label">Modo normal</span>
+          <div class="user-info">
+            <strong id="user-name">Usuario</strong>
+            <span>Cuenta personal</span>
+          </div>
+
+          <button class="user-menu-btn" aria-label="Cerrar sesión" onclick="cerrarSesion()" title="Cerrar sesión">
+            ⏻
+          </button>
+        </div>
+      </div>
+
+    </aside>
+
+    <div class="overlay" id="sidebar-backdrop" onclick="cerrarSidebar()"></div>
+
+    <!-- MAIN -->
+    <main class="main" id="main">
+
+      <!-- NAVBAR SUPERIOR -->
+      <header class="topbar" id="topbar">
+
+        <div class="topbar-left">
+          <button class="hamburger" id="menu-toggle" onclick="toggleSidebar()" aria-label="Abrir menú">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+
+          <div class="brand">
+            <div class="brand-icon">
+              ✦
+            </div>
+
+            <div class="brand-text">
+              <strong>Charvis</strong>
+              <span id="active-mode-label">Modo normal</span>
+            </div>
           </div>
         </div>
 
         <div class="topbar-right">
-          <button id="audio-toggle" type="button" onclick="toggleAudio()" title="Voz activada">
-            🔊
+          <button class="audio-btn" title="Activar/Desactivar Voz" id="audio-toggle" onclick="toggleAudio()">
+            <span class="audio-icon">🔊</span>
           </button>
 
-          <div id="connection-status" class="connection-status">
-            <span class="status-dot"></span>
-            <span>Conectado</span>
-          </div>
+          <button class="credits-pill" onclick="accionProximamente('Sección de Créditos')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+            <span>Créditos</span>
+          </button>
         </div>
+
       </header>
 
-      <section id="chat" aria-live="polite"></section>
+      <!-- CONTENIDO CENTRAL -->
+      <section class="chat-home" id="chat" aria-live="polite">
+        <!-- App.js insertará aquí los mensajes o la pantalla de bienvenida -->
+      </section>
 
-      <form id="composer" class="composer" onsubmit="enviarMensaje(event)">
-        <div class="composer-shell">
-          <button type="button" class="composer-tool" onclick="document.getElementById('file-input').click()"
-            title="Adjuntar archivo" aria-label="Adjuntar archivo">
-            +
-          </button>
+      <!-- COMPOSER FIJO PARA EL CHAT -->
+      <form id="composer" class="composer composer-fixed" onsubmit="enviarMensaje(event)">
+        <div class="prompt-box">
+          <textarea id="message-input" placeholder="Pregúntale algo a Charvis..." rows="1" autocomplete="off" spellcheck="false" wrap="soft" oninput="autoResizeTextarea(this); sincronizarHeroInput(this.value)"></textarea>
 
-          <textarea id="message-input" placeholder="Escribí tu mensaje..." rows="1" autocomplete="off"
-            spellcheck="false" wrap="soft"
-            oninput="autoResizeTextarea(this); sincronizarHeroInput(this.value)"></textarea>
+          <div class="prompt-actions">
+            <div class="prompt-actions-left">
+              <button type="button" class="round-btn" onclick="document.getElementById('file-input').click()" title="Adjuntar archivo">+</button>
 
-          <button type="button" id="voice-btn" class="composer-tool voice-btn" onclick="toggleGrabacion()"
-            title="Grabar mensaje de voz">
-            🎙
-          </button>
+              <button type="button" class="tool-btn" id="reasoning-toggle" onclick="toggleModoRazonamiento()">
+                Herramientas
+              </button>
+            </div>
 
-          <button type="button" id="reasoning-toggle" class="reasoning-toggle" onclick="toggleModoRazonamiento()">
-            Normal
-          </button>
+            <div class="prompt-actions-right">
+              <button type="button" class="mode-btn" id="mode-button" onclick="toggleModoRazonamiento()">
+                Normal
+              </button>
 
-          <button id="send-button" type="submit" title="Enviar mensaje" aria-label="Enviar mensaje">
-            ↑
-          </button>
+              <button type="button" id="voice-btn" class="round-btn small voice-btn" onclick="toggleGrabacion()" title="Grabar voz">
+                🎙
+              </button>
+
+              <button id="send-button" type="submit" class="send-btn" title="Enviar mensaje">
+                ↑
+              </button>
+            </div>
+          </div>
         </div>
       </form>
+
     </main>
+
   </div>
 
   <input type="file" id="file-input" style="display:none;" multiple
@@ -135,6 +179,14 @@
     onchange="handleFiles(this.files)" />
 
   <script src="app.js"></script>
+  <script>
+    function handleAvatarError(img) {
+      if (!img) return;
+      img.style.display = "none";
+      const fallback = img.parentElement.querySelector(".avatar-fallback");
+      if (fallback) fallback.style.display = "flex";
+    }
+  </script>
 </body>
 
 </html>
