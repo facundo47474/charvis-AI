@@ -154,9 +154,16 @@
             </div>
 
             <div class="prompt-actions-right">
-              <button type="button" class="mode-btn" id="mode-button" onclick="toggleModoRazonamiento()">
-                Normal
-              </button>
+              <div class="mode-selector-container">
+                <button type="button" class="mode-btn" id="mode-button" onclick="toggleModeDropdown()">
+                  Normal
+                </button>
+                <div class="mode-dropdown" id="mode-dropdown">
+                  <button type="button" onclick="setMode('normal')" class="mode-option active" id="opt-normal">✨ Normal</button>
+                  <button type="button" onclick="setMode('razonamiento')" class="mode-option" id="opt-razonamiento">🧠 Razonamiento</button>
+                  <button type="button" onclick="setMode('pro')" class="mode-option" id="opt-pro">🚀 Charvis Pro <span class="badge">Swarm</span></button>
+                </div>
+              </div>
 
               <button type="button" id="voice-btn" class="round-btn small voice-btn" onclick="toggleGrabacion()" title="Grabar voz">
                 🎙

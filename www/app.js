@@ -648,9 +648,16 @@ function obtenerPantallaBienvenida() {
         </div>
 
         <div class="prompt-actions-right">
-          <button type="button" class="mode-btn" id="hero-mode-button" onclick="toggleModoRazonamiento()">
-            Normal
-          </button>
+          <div class="mode-selector-container">
+            <button type="button" class="mode-btn" id="hero-mode-button" onclick="toggleModeDropdown(true)">
+              Normal
+            </button>
+            <div class="mode-dropdown" id="hero-mode-dropdown">
+              <button type="button" onclick="setMode('normal')" class="mode-option active" id="hero-opt-normal">✨ Normal</button>
+              <button type="button" onclick="setMode('razonamiento')" class="mode-option" id="hero-opt-razonamiento">🧠 Razonamiento</button>
+              <button type="button" onclick="setMode('pro')" class="mode-option" id="hero-opt-pro">🚀 Charvis Pro <span class="badge">Swarm</span></button>
+            </div>
+          </div>
 
           <button type="button" class="round-btn small voice-btn" id="hero-voice-btn" onclick="toggleGrabacion()" title="Grabar voz">
             🎙
@@ -820,7 +827,7 @@ function handleFiles(files) {
 
 function renderFilePreviews() {
   const isWelcome = document.body.classList.contains("welcome-active");
-  const composer = isWelcome ? document.querySelector('.hero-composer-card') : document.querySelector('.composer-shell');
+  const composer = isWelcome ? document.querySelector('.is-welcome .prompt-box') : document.querySelector('.composer .prompt-box');
 
   if (!composer) return;
 
@@ -1003,53 +1010,90 @@ function cerrarToast() {
   clearTimeout(toastTimeout);
 }
 
+let currentMode = "normal";
+
+function toggleModeDropdown(isHero = false) {
+  const dropdownId = isHero ? "hero-mode-dropdown" : "mode-dropdown";
+  const dropdown = document.getElementById(dropdownId);
+  if (!dropdown) return;
+  
+  // Close any other open dropdowns
+  document.querySelectorAll('.mode-dropdown').forEach(d => {
+    if (d.id !== dropdownId) d.classList.remove('show');
+  });
+  
+  dropdown.classList.toggle('show');
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.mode-selector-container')) {
+    document.querySelectorAll('.mode-dropdown').forEach(d => d.classList.remove('show'));
+  }
+});
+
 function toggleModoRazonamiento() {
-  modoRazonamientoActivo = !modoRazonamientoActivo;
+  setMode(currentMode === "normal" ? "razonamiento" : "normal");
+}
+
+function setMode(mode) {
+  currentMode = mode;
+  modoRazonamientoActivo = (mode === "razonamiento" || mode === "pro"); // Keep backwards compatibility
+
+  // Hide dropdowns
+  document.querySelectorAll('.mode-dropdown').forEach(d => d.classList.remove('show'));
 
   sincronizarBotonesModo();
 
-  mostrarAvisoTemporal(
-    modoRazonamientoActivo
-      ? "Modo razonamiento activado."
-      : "Modo normal activado."
-  );
+  let msg = "Modo normal activado.";
+  if (mode === "razonamiento") msg = "Modo razonamiento activado.";
+  if (mode === "pro") msg = "Modo Charvis Pro (Enjambre Qwen) activado.";
+  
+  mostrarAvisoTemporal(msg);
 }
 
 function sincronizarBotonesModo() {
-  const label = modoRazonamientoActivo ? "Razonamiento" : "Normal";
+  let label = "Normal";
+  let activeText = "Modo normal";
+  if (currentMode === "razonamiento") {
+    label = "Razonamiento";
+    activeText = "Modo razonamiento";
+  } else if (currentMode === "pro") {
+    label = "Charvis Pro";
+    activeText = "Modo Pro (Enjambre)";
+  }
 
   const modeButton = document.getElementById("mode-button");
   const heroModeButton = document.getElementById("hero-mode-button");
   const reasoningToggle = document.getElementById("reasoning-toggle");
   const heroReasoningToggle = document.getElementById("hero-reasoning-toggle");
   const activeModeLabel = document.getElementById("active-mode-label");
-
   const ctxBtn = document.getElementById("ctx-razonamiento");
 
   if (modeButton) {
-    modeButton.textContent = label;
-    modeButton.classList.toggle("active", modoRazonamientoActivo);
+    modeButton.innerHTML = label;
+    modeButton.classList.toggle("active", currentMode !== "normal");
   }
   if (heroModeButton) {
-    heroModeButton.textContent = label;
-    heroModeButton.classList.toggle("active", modoRazonamientoActivo);
+    heroModeButton.innerHTML = label;
+    heroModeButton.classList.toggle("active", currentMode !== "normal");
   }
 
-  if (reasoningToggle) {
-    reasoningToggle.classList.toggle("active", modoRazonamientoActivo);
-  }
-  if (heroReasoningToggle) {
-    heroReasoningToggle.classList.toggle("active", modoRazonamientoActivo);
-  }
+  // Support for legacy toggle buttons
+  if (reasoningToggle) reasoningToggle.classList.toggle("active", currentMode !== "normal");
+  if (heroReasoningToggle) heroReasoningToggle.classList.toggle("active", currentMode !== "normal");
+  if (ctxBtn) ctxBtn.classList.toggle("active", currentMode !== "normal");
 
-  if (ctxBtn) {
-    ctxBtn.classList.toggle("active", modoRazonamientoActivo);
-  }
+  // Update dropdown options active state
+  document.querySelectorAll('.mode-option').forEach(opt => opt.classList.remove('active'));
+  const activeIds = [`opt-${currentMode}`, `hero-opt-${currentMode}`];
+  activeIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('active');
+  });
 
   if (activeModeLabel) {
-    activeModeLabel.textContent = modoRazonamientoActivo
-      ? "Modo razonamiento"
-      : "Modo normal";
+    activeModeLabel.textContent = activeText;
   }
 }
 
@@ -1491,6 +1535,7 @@ function markdownToHtml(text) {
   let html = text
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code.trim()}</code></pre>`)
+    .replace(/:::think\n([\s\S]*?)\n:::/g, (_, content) => `<details class="charvis-thought-process"><summary>🧠 Proceso de Razonamiento (Charvis AI)</summary><div class="thought-content">${content.trim()}</div></details>`)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>")

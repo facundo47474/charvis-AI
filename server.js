@@ -6,14 +6,14 @@ if (envResult.error) {
   console.log("✅ Archivo .env cargado correctamente");
 }
 
-const express    = require("express");
+const express = require("express");
 const { WebSocketServer } = require("ws");
-const http       = require("http");
-const path       = require("path");
-const fs         = require("fs");
-const https      = require("https");
-const crypto     = require("crypto");
-const Groq       = require("groq-sdk");
+const http = require("http");
+const path = require("path");
+const fs = require("fs");
+const https = require("https");
+const crypto = require("crypto");
+const Groq = require("groq-sdk");
 
 const { buildSystemPrompt } = require("./lib/ai/prompts");
 const { getUserCredits, hasEnoughCredits, consumeCredits } = require("./lib/credits");
@@ -21,8 +21,8 @@ const { estimateTokens, buildModelContext, MAX_INPUT_CHARS, MAX_OUTPUT_TOKENS } 
 
 const { recortarHistorial } = require("./historial");
 const { esEco } = require("./eco");
-const pdfParse   = require("pdf-parse");
-const mammoth    = require("mammoth");
+const pdfParse = require("pdf-parse");
+const mammoth = require("mammoth");
 
 // --- Abort Controllers para cancelar generación ---
 const abortControllers = new Map();
@@ -74,13 +74,14 @@ async function verificarClaveGroq() {
 }
 
 const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY || "";
-const VOICE_ID      = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
-const PORT          = process.env.PORT || 3000;
-const CHAT_MODEL    = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
-const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "deepseek-r1-distill-llama-70b";
-const VISION_MODEL  = process.env.GROQ_VISION_MODEL || "llama-3.2-11b-vision-preview";
-const APP_USER      = process.env.APP_USER || "admin";
-const APP_PASSWORD  = process.env.APP_PASSWORD || "facu";
+const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
+const PORT = process.env.PORT || 3000;
+const CHAT_MODEL = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
+const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "openai/gpt-oss-120b";
+const VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+const SWARM_WORKER_MODEL = process.env.GROQ_SWARM_MODEL || "qwen/qwen3-32b";
+const APP_USER = process.env.APP_USER || "admin";
+const APP_PASSWORD = process.env.APP_PASSWORD || "facu";
 const MAX_EXTRACTED_CHARS = 60000;
 const MAX_EXTRACTED_CHARS_REASONING = 24000;
 const MAX_FILE_BYTES = 12 * 1024 * 1024;
@@ -99,9 +100,9 @@ function verificarSesion(token) {
   return s;
 }
 
-const app    = express();
+const app = express();
 const server = http.createServer(app);
-const wss    = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server });
 
 // Archivos estáticos sin auth (la SPA maneja su propio estado de login)
 app.use(express.static(path.join(__dirname, "www")));
@@ -168,7 +169,9 @@ app.post("/api/auth/logout", (req, res) => {
 
 
 function modoValido(modo) {
-  return modo === "razonamiento" ? "razonamiento" : "normal";
+  if (modo === "razonamiento") return "razonamiento";
+  if (modo === "pro") return "pro";
+  return "normal";
 }
 
 function normalizarNombreArchivo(nombre) {
@@ -330,7 +333,7 @@ function contenidoComoTexto(content) {
 
 function prepararMensajes(historial, modo, selectedContext) {
   const systemPrompt = buildSystemPrompt(selectedContext, modo);
-  
+
   // Reemplazamos el primer mensaje (sistema) o lo agregamos si no existe
   const mensajes = [...historial];
   if (mensajes.length > 0 && mensajes[0].role === "system") {
@@ -339,11 +342,16 @@ function prepararMensajes(historial, modo, selectedContext) {
     mensajes.unshift({ role: "system", content: systemPrompt });
   }
 
-  // Aseguramos que el contenido sea texto plano para el modelo
-  return mensajes.map((m) => ({ 
-    ...m, 
-    content: contenidoComoTexto(m.content) 
-  }));
+  // Preservamos el contenido si es un array con imágenes, de lo contrario lo forzamos a texto
+  return mensajes.map((m) => {
+    if (Array.isArray(m.content) && m.content.some(c => c.type === "image_url")) {
+      return m; // Mantener la estructura multimodal intacta
+    }
+    return {
+      ...m,
+      content: contenidoComoTexto(m.content)
+    };
+  });
 }
 
 function elevenLabsTTS(text) {
@@ -464,6 +472,10 @@ wss.on("connection", (ws, req) => {
     const modo = modoValido(opciones.modo);
     const contexto = opciones.contexto || null;
 
+    if (modo === "pro") {
+      return await ejecutarSwarmDirecto(conversationId, historial, opciones);
+    }
+
     // Detector de complejidad
     let ultimoMensajeUsuario = historial.filter(m => m.role === "user").pop()?.content || "";
     const tieneImagenes = historial.some(m => Array.isArray(m.content) && m.content.some(c => c.type === "image_url"));
@@ -472,7 +484,10 @@ wss.on("connection", (ws, req) => {
       const textObj = ultimoMensajeUsuario.find(item => item.type === 'text');
       ultimoMensajeUsuario = textObj ? textObj.text : "";
     }
-    const esComplejo = !tieneImagenes && detectarComplejidad(ultimoMensajeUsuario) && modo === "razonamiento";
+    
+    // Si el usuario seleccionó "razonamiento" explícitamente, SIEMPRE ejecuta el pipeline de razonamiento
+    // excepto si es una imagen pura (las imágenes siempre van directo al modelo de visión)
+    const esComplejo = !tieneImagenes && modo === "razonamiento";
 
     if (!esComplejo) {
       // Flujo normal directo
@@ -482,33 +497,151 @@ wss.on("connection", (ws, req) => {
     // PIPELINE DE RAZONAMIENTO
     try {
       // 1. PLANNER
-      send({type: "estado", valor: "entendiendo_problema", conversationId});
+      send({ type: "estado", valor: "entendiendo_problema", conversationId });
       const plan = await llamadaPlanner(ultimoMensajeUsuario);
 
-      send({type: "estado", valor: "creando_plan", conversationId});
+      send({ type: "estado", valor: "creando_plan", conversationId });
 
       // 2. EXECUTOR
-      send({type: "estado", valor: "ejecutando_plan", conversationId});
+      send({ type: "estado", valor: "ejecutando_plan", conversationId });
       const respuestaPreliminar = await llamadaExecutor(ultimoMensajeUsuario, plan);
 
       // 3. REVIEWER
-      send({type: "estado", valor: "verificando_respuesta", conversationId});
+      send({ type: "estado", valor: "verificando_respuesta", conversationId });
       const respuestaFinal = await llamadaReviewer(respuestaPreliminar, ultimoMensajeUsuario);
 
+      // Ensamblar la respuesta con el bloque visible de pensamiento
+      const respuestaCompleta = `:::think
+**Plan Trazado:**
+${plan}
+
+**Ejecución Lógica:**
+${respuestaPreliminar}
+:::
+
+${respuestaFinal}`;
+
       // 4. ENVIAR AL USUARIO
-      send({type: "estado", valor: "finalizado", conversationId});
-      send({type: "mensaje", rol: "charvis", texto: respuestaFinal, conversationId});
+      send({ type: "estado", valor: "finalizado", conversationId });
+      send({ type: "mensaje", rol: "charvis", texto: respuestaCompleta, conversationId });
 
       // Guardar en historial
-      historial.push({role: "assistant", content: respuestaFinal});
+      historial.push({ role: "assistant", content: respuestaCompleta });
       guardarHistorial(conversationId, historial);
 
       // Descontar créditos
       consumeCredits(opciones.userId || "anon", 1, opciones.isGuest);
 
     } catch (error) {
-      send({type: "error", texto: "Error en el proceso de razonamiento: " + error.message, conversationId});
+      send({ type: "error", texto: "Error en el proceso de razonamiento: " + error.message, conversationId });
     }
+  }
+
+  // --- SWARM / ENJAMBRE PIPELINE ---
+  async function ejecutarSwarmDirecto(conversationId, historial, opciones = {}) {
+    let ultimoMensajeUsuario = historial.filter(m => m.role === "user").pop()?.content || "";
+    if (Array.isArray(ultimoMensajeUsuario)) {
+      const textObj = ultimoMensajeUsuario.find(item => item.type === 'text');
+      ultimoMensajeUsuario = textObj ? textObj.text : "";
+    }
+
+    try {
+      send({ type: "estado", valor: "pensando_multi_modelo", conversationId });
+
+      // Fase 1: Enjambre Qwen en Paralelo (distintas temperaturas para variedad)
+      const workers = [
+        llamadaSwarmWorker(ultimoMensajeUsuario, 0.3),
+        llamadaSwarmWorker(ultimoMensajeUsuario, 0.6),
+        llamadaSwarmWorker(ultimoMensajeUsuario, 0.9)
+      ];
+
+      const respuestasEnjambre = await Promise.all(workers);
+
+      // Fase 2: Síntesis con el Modelo Juez
+      send({ type: "estado", valor: "sintetizando", conversationId });
+
+      const respuestaFinal = await llamadaSwarmJudge(ultimoMensajeUsuario, respuestasEnjambre);
+
+      send({ type: "estado", valor: "finalizado", conversationId });
+      send({ type: "mensaje", rol: "charvis", texto: respuestaFinal, conversationId });
+
+      // Guardar en historial
+      historial.push({ role: "assistant", content: respuestaFinal });
+      guardarHistorial(conversationId, historial);
+
+      // Consumir créditos (el modo PRO cuesta más)
+      consumeCredits(opciones.userId || "anon", 3, opciones.isGuest);
+
+    } catch (error) {
+      console.error("Swarm Error:", error);
+      send({ type: "error", texto: "Error en Charvis Pro (Swarm): " + error.message, conversationId });
+    }
+  }
+
+  async function llamadaSwarmWorker(mensajeUsuario, temperature) {
+    const systemPrompt = "Eres un experto analista. Analiza la petición y da la mejor respuesta directa y precisa posible.";
+
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + GROQ_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: SWARM_WORKER_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: mensajeUsuario }
+        ],
+        max_tokens: 3000,
+        temperature: temperature
+      })
+    });
+
+    if (!response.ok) throw new Error("Fallo en un Worker del Enjambre");
+    const data = await response.json();
+    return data.choices[0].message.content;
+  }
+
+  async function llamadaSwarmJudge(mensajeUsuario, respuestas) {
+    const systemPrompt = "Eres Charvis Pro, un Juez y Sintetizador experto. Acabas de recibir respuestas de 3 modelos de IA subordinados para la misma petición del usuario. " +
+      "Tu tarea es analizar las 3 respuestas, extraer la información correcta, filtrar cualquier error o alucinación, y redactar una única respuesta final definitiva, brillante y cohesionada en español rioplatense (voseo). " +
+      "NUNCA menciones que usaste 3 modelos o que eres un juez evaluando respuestas. Da la respuesta definitiva como si fuera tuya directamente.";
+
+    const promptJuez = `PREGUNTA DEL USUARIO:
+${mensajeUsuario}
+
+--- RESPUESTA MODELO 1 ---
+${respuestas[0]}
+
+--- RESPUESTA MODELO 2 ---
+${respuestas[1]}
+
+--- RESPUESTA MODELO 3 ---
+${respuestas[2]}
+
+Sintetiza la mejor respuesta definitiva ahora:`;
+
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + GROQ_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: REASONING_MODEL, // Juez poderoso
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: promptJuez }
+        ],
+        max_tokens: 4000,
+        temperature: 0.3
+      })
+    });
+
+    if (!response.ok) throw new Error("Fallo en el Juez Sintetizador");
+    const data = await response.json();
+    return data.choices[0].message.content;
   }
 
   function detectarComplejidad(textoInput) {
@@ -532,8 +665,8 @@ wss.on("connection", (ws, req) => {
       body: JSON.stringify({
         model: REASONING_MODEL,
         messages: [
-          {role: "system", content: "Eres un planificador experto. Analiza la tarea del usuario y genera un plan de máximo 5 pasos concretos numerados. Sé técnico y breve. NO respondas la pregunta todavía, solo el plan."},
-          {role: "user", content: mensajeUsuario}
+          { role: "system", content: "Eres un planificador experto. Analiza la tarea del usuario y genera un plan de máximo 5 pasos concretos numerados. Sé técnico y breve. NO respondas la pregunta todavía, solo el plan." },
+          { role: "user", content: mensajeUsuario }
         ],
         max_tokens: 1500,
         temperature: 0.3
@@ -566,8 +699,8 @@ wss.on("connection", (ws, req) => {
       body: JSON.stringify({
         model: REASONING_MODEL,
         messages: [
-          {role: "system", content: "Eres un ejecutor experto. Sigue estrictamente el plan proporcionado paso a paso. Razona en voz alta antes de cada paso (chain of thought). Genera la mejor respuesta posible en español."},
-          {role: "user", content: mensajeUsuario + "\n\nPLAN A SEGUIR:\n" + plan}
+          { role: "system", content: "Eres un ejecutor experto. Sigue estrictamente el plan proporcionado paso a paso. Razona en voz alta antes de cada paso (chain of thought). Genera la mejor respuesta posible en español." },
+          { role: "user", content: mensajeUsuario + "\n\nPLAN A SEGUIR:\n" + plan }
         ],
         max_tokens: 4000,
         temperature: 0.4
@@ -600,8 +733,8 @@ wss.on("connection", (ws, req) => {
       body: JSON.stringify({
         model: REASONING_MODEL,
         messages: [
-          {role: "system", content: "Eres un revisor crítico senior. Revisa la siguiente respuesta buscando errores lógicos, omisiones, mejores prácticas faltantes, o si no respondió exactamente lo pedido. Si está perfecta, devuélvela tal cual. Si tiene errores, corrígela y devuelve solo la versión corregida. NO agregues metacommentarios del tipo 'como revisor'."},
-          {role: "user", content: `PREGUNTA ORIGINAL:\n${preguntaOriginal}\n\nRESPUESTA A REVISAR:\n${respuesta}\n\nDevuelve la respuesta corregida y mejorada.`}
+          { role: "system", content: "Eres un revisor crítico senior. Revisa la siguiente respuesta buscando errores lógicos, omisiones, mejores prácticas faltantes, o si no respondió exactamente lo pedido. Si está perfecta, devuélvela tal cual. Si tiene errores, corrígela y devuelve solo la versión corregida. NO agregues metacommentarios del tipo 'como revisor'." },
+          { role: "user", content: `PREGUNTA ORIGINAL:\n${preguntaOriginal}\n\nRESPUESTA A REVISAR:\n${respuesta}\n\nDevuelve la respuesta corregida y mejorada.` }
         ],
         max_tokens: 4000,
         temperature: 0.2
@@ -715,10 +848,10 @@ wss.on("connection", (ws, req) => {
                 const frase = bufferTexto.slice(0, idx).trim();
                 bufferTexto = bufferTexto.slice(idx);
                 if (frase) {
-                  enviarFrase(frase).catch(() => {});
+                  enviarFrase(frase).catch(() => { });
                 }
               }
-            } catch (e) {}
+            } catch (e) { }
           }
         }
       }
@@ -726,7 +859,7 @@ wss.on("connection", (ws, req) => {
       // Enviar resto de audio si quedó algo
       const audioFinal = opciones.audioActivo !== false && !!ELEVENLABS_KEY;
       if (audioFinal && bufferTexto.trim()) {
-        enviarFrase(bufferTexto.trim()).catch(() => {});
+        enviarFrase(bufferTexto.trim()).catch(() => { });
       }
 
       send({ type: "streamTerminado", conversationId });
@@ -798,7 +931,7 @@ wss.on("connection", (ws, req) => {
     } else {
       try {
         const msg = JSON.parse(data.toString());
-        
+
         // --- MANEJO DE ABORTO ---
         if (msg.type === "abort") {
           const conversationId = obtenerConversationId(msg);
@@ -871,9 +1004,10 @@ wss.on("connection", (ws, req) => {
             const tieneImagenes = msg.adjuntos?.some(a => a.tipo === 'imagen');
 
             if (tieneImagenes) {
+              const textoVision = contenidoUsuario.trim() ? contenidoUsuario : "Por favor, analiza la imagen adjunta detalladamente.";
               const mensajeVision = {
                 role: "user",
-                content: [{ type: "text", text: contenidoUsuario }]
+                content: [{ type: "text", text: textoVision }]
               };
 
               msg.adjuntos.filter(a => a.tipo === 'imagen').forEach(img => {
@@ -889,9 +1023,9 @@ wss.on("connection", (ws, req) => {
 
             historial = recortarHistorial(historial);
             guardarHistorial(conversationId, historial);
-            
-            await procesarConLLM(conversationId, historial, { 
-              modo, 
+
+            await procesarConLLM(conversationId, historial, {
+              modo,
               contexto: msg.contexto,
               userId,
               isGuest
@@ -908,7 +1042,7 @@ wss.on("connection", (ws, req) => {
           }
           return;
         }
-      } catch (_) {}
+      } catch (_) { }
     }
   });
 });
