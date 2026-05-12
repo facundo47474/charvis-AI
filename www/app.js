@@ -799,29 +799,22 @@ function handleFiles(files) {
 
     const reader = new FileReader();
     reader.onload = (e) => {
+      const dataB64 = e.target.result;
       const adjunto = {
         nombre: file.name,
-        tipo: file.type.startsWith('image/') ? 'imagen' : 'texto',
-        dataUrl: e.target.result,
-        contenido: null,
+        tipo: file.type || 'application/octet-stream',
+        dataUrl: file.type.startsWith('image/') ? dataB64 : null, // Solo imágenes necesitan dataUrl visual
+        contenido: dataB64, // El backend decodifica Base64 de forma nativa a un buffer intacto
         size: file.size
       };
-
-      if (adjunto.tipo === 'texto') {
-        // Para archivos de texto, extraer el contenido
-        const text = e.target.result;
-        adjunto.contenido = text.length > 50000 ? text.substring(0, 50000) + '...' : text;
-      }
 
       archivosAdjuntos.push(adjunto);
       renderFilePreviews();
     };
 
-    if (file.type.startsWith('image/')) {
-      reader.readAsDataURL(file);
-    } else {
-      reader.readAsText(file);
-    }
+    // SIEMPRE leemos como DataURL (Base64). Si se usa readAsText en un PDF o Word,
+    // se corrompe el binario transformándolo en caracteres  inválidos.
+    reader.readAsDataURL(file);
   });
 }
 

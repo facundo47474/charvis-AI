@@ -77,13 +77,21 @@ const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY || "";
 const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
 const PORT = process.env.PORT || 3000;
 const CHAT_MODEL = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
+// gpt-oss-120b has an 8k TPM hard limit on free tier — only used for Swarm Judge (controlled input)
 const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "openai/gpt-oss-120b";
-const VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+// All 3 reasoning pipeline stages use the versatile model (high rate limit, handles large docs)
+const PLANNER_MODEL  = process.env.GROQ_PLANNER_MODEL  || "llama-3.3-70b-versatile";
+const EXECUTOR_MODEL = process.env.GROQ_EXECUTOR_MODEL || "llama-3.3-70b-versatile";
+const REVIEWER_MODEL = process.env.GROQ_REVIEWER_MODEL || "llama-3.3-70b-versatile";
+const VISION_MODEL   = process.env.GROQ_VISION_MODEL   || "meta-llama/llama-4-scout-17b-16e-instruct";
 const SWARM_WORKER_MODEL = process.env.GROQ_SWARM_MODEL || "qwen/qwen3-32b";
 const APP_USER = process.env.APP_USER || "admin";
 const APP_PASSWORD = process.env.APP_PASSWORD || "facu";
 const MAX_EXTRACTED_CHARS = 60000;
-const MAX_EXTRACTED_CHARS_REASONING = 24000;
+const MAX_EXTRACTED_CHARS_REASONING = 80000;
+const MAX_INPUT_CHARS_PLANNER  = 10000;  // ~2500 tokens
+const MAX_INPUT_CHARS_EXECUTOR = 24000;  // ~6000 tokens — safe for versatile model
+const MAX_INPUT_CHARS_REVIEWER = 10000;  // ~2500 tokens
 const MAX_FILE_BYTES = 12 * 1024 * 1024;
 
 // --- Sesiones en memoria ---
@@ -484,7 +492,7 @@ wss.on("connection", (ws, req) => {
       const textObj = ultimoMensajeUsuario.find(item => item.type === 'text');
       ultimoMensajeUsuario = textObj ? textObj.text : "";
     }
-    
+
     // Si el usuario seleccionó "razonamiento" explícitamente, SIEMPRE ejecuta el pipeline de razonamiento
     // excepto si es una imagen pura (las imágenes siempre van directo al modelo de visión)
     const esComplejo = !tieneImagenes && modo === "razonamiento";
@@ -655,18 +663,57 @@ Sintetiza la mejor respuesta definitiva ahora:`;
     return clave.test(texto);
   }
 
+  // Truncate text safely to avoid Unicode surrogate splitting and 413 errors
+  function truncarParaRazonamiento(texto, limite = MAX_INPUT_CHARS_PLANNER) {
+    if (!texto || texto.length <= limite) return texto;
+    const mitad = Math.floor(limite / 2);
+    let inicio = texto.slice(0, mitad);
+    let fin = texto.slice(-mitad);
+    
+    // Prevent cutting a UTF-16 high surrogate in half
+    if (inicio.length > 0 && inicio.charCodeAt(inicio.length - 1) >= 0xD800 && inicio.charCodeAt(inicio.length - 1) <= 0xDBFF) {
+      inicio = inicio.slice(0, -1);
+    }
+    if (fin.length > 0 && fin.charCodeAt(0) >= 0xDC00 && fin.charCodeAt(0) <= 0xDFFF) {
+      fin = fin.slice(1);
+    }
+    
+    return inicio + `\n\n[...texto truncado para el análisis, ${Math.round((texto.length - limite) / 1000)}k caracteres omitidos...]\n\n` + fin;
+  }
+
+  /**
+   * Wrapper de fetch con reintentos automáticos y backoff exponencial para errores 429.
+   * maxReintentos: número de veces que reintenta antes de rendirse.
+   * delayBase: milisegundos de espera en el primer reintento (se duplica en cada intento).
+   */
+  async function fetchConReintentos(url, opciones, maxReintentos = 3, delayBase = 2000) {
+    for (let intento = 0; intento <= maxReintentos; intento++) {
+      const response = await fetch(url, opciones);
+
+      if (response.status !== 429) return response; // Éxito o error no recuperable
+
+      if (intento === maxReintentos) return response; // Sin más reintentos, devolver igual
+
+      // Calcular tiempo de espera con jitter (factor aleatorio pequeño) para evitar tormenta de retries
+      const espera = delayBase * Math.pow(2, intento) + Math.random() * 500;
+      console.warn(`[Retry ${intento + 1}/${maxReintentos}] Rate limit 429. Esperando ${Math.round(espera)}ms...`);
+      await new Promise(resolve => setTimeout(resolve, espera));
+    }
+  }
+
   async function llamadaPlanner(mensajeUsuario) {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const inputTruncado = truncarParaRazonamiento(mensajeUsuario);
+    const response = await fetchConReintentos("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + GROQ_KEY,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: REASONING_MODEL,
+        model: PLANNER_MODEL,  // Fast model — high rate limit quota
         messages: [
           { role: "system", content: "Eres un planificador experto. Analiza la tarea del usuario y genera un plan de máximo 5 pasos concretos numerados. Sé técnico y breve. NO respondas la pregunta todavía, solo el plan." },
-          { role: "user", content: mensajeUsuario }
+          { role: "user", content: inputTruncado }
         ],
         max_tokens: 1500,
         temperature: 0.3
@@ -674,15 +721,8 @@ Sintetiza la mejor respuesta definitiva ahora:`;
     });
 
     if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error("Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env.");
-      }
-      if (response.status === 413) {
-        throw new Error("El archivo adjunto o el texto es demasiado largo para procesar. Por favor, intenta con un archivo más pequeño o un fragmento más corto.");
-      }
-      if (response.status === 429) {
-        throw new Error("La red está muy ocupada o excediste el límite de peticiones. Por favor, espera un momento e intenta de nuevo.");
-      }
+      if (response.status === 401) throw new Error("Groq API Key inválida o expirada.");
+      if (response.status === 429) throw new Error("Límite de peticiones alcanzado. Esperá un momento e intentá de nuevo.");
       throw new Error(`Planner error: ${response.status}`);
     }
     const data = await response.json();
@@ -690,71 +730,73 @@ Sintetiza la mejor respuesta definitiva ahora:`;
   }
 
   async function llamadaExecutor(mensajeUsuario, plan) {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    // Truncate both the user message AND the plan to stay within context window
+    const inputTruncado = truncarParaRazonamiento(mensajeUsuario, MAX_INPUT_CHARS_EXECUTOR);
+    const planTruncado = plan.slice(0, 3000);
+    const response = await fetchConReintentos("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + GROQ_KEY,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: REASONING_MODEL,
+        model: EXECUTOR_MODEL,  // versatile model — handles large docs without TPM cap issues
         messages: [
           { role: "system", content: "Eres un ejecutor experto. Sigue estrictamente el plan proporcionado paso a paso. Razona en voz alta antes de cada paso (chain of thought). Genera la mejor respuesta posible en español." },
-          { role: "user", content: mensajeUsuario + "\n\nPLAN A SEGUIR:\n" + plan }
+          { role: "user", content: inputTruncado + "\n\nPLAN A SEGUIR:\n" + planTruncado }
         ],
-        max_tokens: 4000,
+        max_tokens: 4096,
         temperature: 0.4
       })
     });
 
     if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error("Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env.");
-      }
-      if (response.status === 413) {
-        throw new Error("El archivo adjunto o el texto es demasiado largo para procesar. Por favor, intenta con un archivo más pequeño o un fragmento más corto.");
-      }
-      if (response.status === 429) {
-        throw new Error("La red está muy ocupada o excediste el límite de peticiones. Por favor, espera un momento e intenta de nuevo.");
-      }
-      throw new Error(`Executor error: ${response.status}`);
+      if (response.status === 401) throw new Error("Groq API Key inválida o expirada.");
+      if (response.status === 429) throw new Error("Rate limit persistente. Intentá nuevamente en un minuto.");
+      const errBody = await response.json().catch(() => ({}));
+      throw new Error(`Executor error ${response.status}: ${errBody?.error?.message || ''}`);
     }
     const data = await response.json();
     return data.choices?.[0]?.message?.content || "";
   }
 
   async function llamadaReviewer(respuesta, preguntaOriginal) {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const preguntaTruncada = truncarParaRazonamiento(preguntaOriginal, MAX_INPUT_CHARS_REVIEWER);
+    const respuestaTruncada = truncarParaRazonamiento(respuesta, MAX_INPUT_CHARS_REVIEWER);
+    const response = await fetchConReintentos("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + GROQ_KEY,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: REASONING_MODEL,
+        model: REVIEWER_MODEL,  // Fast model — high rate limit quota
         messages: [
           { role: "system", content: "Eres un revisor crítico senior. Revisa la siguiente respuesta buscando errores lógicos, omisiones, mejores prácticas faltantes, o si no respondió exactamente lo pedido. Si está perfecta, devuélvela tal cual. Si tiene errores, corrígela y devuelve solo la versión corregida. NO agregues metacommentarios del tipo 'como revisor'." },
-          { role: "user", content: `PREGUNTA ORIGINAL:\n${preguntaOriginal}\n\nRESPUESTA A REVISAR:\n${respuesta}\n\nDevuelve la respuesta corregida y mejorada.` }
+          { role: "user", content: `PREGUNTA ORIGINAL:\n${preguntaTruncada}\n\nRESPUESTA A REVISAR:\n${respuestaTruncada}\n\nDevuelve la respuesta corregida y mejorada.` }
         ],
-        max_tokens: 4000,
-        temperature: 0.2
+        max_tokens: 4096,
+        temperature: 0.4, // Increased from 0.2 to prevent LLM loop hallucinations
+        presence_penalty: 0.1 // Reduces chance of infinite loop tokens like __
       })
     });
 
     if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error("Groq API Key inválida o expirada. Verifica tu GROQ_API_KEY en el archivo .env.");
-      }
-      if (response.status === 413) {
-        throw new Error("El archivo adjunto o el texto es demasiado largo para procesar. Por favor, intenta con un archivo más pequeño o un fragmento más corto.");
-      }
-      if (response.status === 429) {
-        throw new Error("La red está muy ocupada o excediste el límite de peticiones. Por favor, espera un momento e intenta de nuevo.");
-      }
+      if (response.status === 401) throw new Error("Groq API Key inválida o expirada.");
+      // If reviewer still fails after all retries, return unreviewed response gracefully
+      if (response.status === 429 || response.status === 413) return respuesta;
       throw new Error(`Reviewer error: ${response.status}`);
     }
     const data = await response.json();
-    return data.choices?.[0]?.message?.content || respuesta;
+    const revision = data.choices?.[0]?.message?.content || respuesta;
+    
+    // Fallback if the model hallucinates garbage symbols due to Unicode/context issues
+    if (revision.includes("__") || revision.includes("")) {
+      console.warn("⚠️ Reviewer generated garbage tokens. Falling back to Executor response.");
+      return respuesta;
+    }
+    
+    return revision;
   }
 
   async function ejecutarLLMDirecto(conversationId, historial, opciones = {}) {

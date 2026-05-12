@@ -11,10 +11,7 @@
   <!-- Fuente similar a Claude -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
-    rel="stylesheet"
-  >
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 
@@ -26,11 +23,12 @@
       <div class="login-content">
         <div class="login-brand">
           <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect width="40" height="40" rx="12" fill="#EAE0D5"/>
-            <path d="M20 12L22.25 17.75L28 20L22.25 22.25L20 28L17.75 22.25L12 20L17.75 17.75L20 12Z" fill="#1E1E1E"/>
+            <rect width="40" height="40" rx="12" fill="#EAE0D5" />
+            <path d="M20 12L22.25 17.75L28 20L22.25 22.25L20 28L17.75 22.25L12 20L17.75 17.75L20 12Z" fill="#1E1E1E" />
           </svg>
           <h1>Bienvenido a Charvis</h1>
-          <p class="login-subtitle">Inteligencia Artificial avanzada diseñada para razonamiento profundo, análisis de archivos y multimodalidad.</p>
+          <p class="login-subtitle">Inteligencia Artificial avanzada diseñada para razonamiento profundo, análisis de
+            archivos y multimodalidad.</p>
         </div>
 
         <div id="login-google-section">
@@ -52,7 +50,8 @@
         <div class="glass-card">
           <span class="sparkle">✦</span>
           <h2>Razonamiento Profundo</h2>
-          <p>Experimenta un pipeline de IA multi-agente capaz de planificar, ejecutar y revisar lógicamente tus tareas más complejas.</p>
+          <p>Experimenta un pipeline de IA multi-agente capaz de planificar, ejecutar y revisar lógicamente tus tareas
+            más complejas.</p>
         </div>
       </div>
     </div>
@@ -127,7 +126,10 @@
           </button>
 
           <button class="credits-pill" onclick="accionProximamente('Sección de Créditos')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 8v8M8 12h8" />
+            </svg>
             <span>Créditos</span>
           </button>
         </div>
@@ -142,11 +144,14 @@
       <!-- COMPOSER FIJO PARA EL CHAT -->
       <form id="composer" class="composer composer-fixed" onsubmit="enviarMensaje(event)">
         <div class="prompt-box">
-          <textarea id="message-input" placeholder="Pregúntale algo a Charvis..." rows="1" autocomplete="off" spellcheck="false" wrap="soft" oninput="autoResizeTextarea(this); sincronizarHeroInput(this.value)"></textarea>
+          <textarea id="message-input" placeholder="Pregúntale algo a Charvis..." rows="1" autocomplete="off"
+            spellcheck="false" wrap="soft"
+            oninput="autoResizeTextarea(this); sincronizarHeroInput(this.value)"></textarea>
 
           <div class="prompt-actions">
             <div class="prompt-actions-left">
-              <button type="button" class="round-btn" onclick="document.getElementById('file-input').click()" title="Adjuntar archivo">+</button>
+              <button type="button" class="round-btn" onclick="document.getElementById('file-input').click()"
+                title="Adjuntar archivo">+</button>
 
               <button type="button" class="tool-btn" id="reasoning-toggle" onclick="toggleModoRazonamiento()">
                 Herramientas
@@ -159,13 +164,17 @@
                   Normal
                 </button>
                 <div class="mode-dropdown" id="mode-dropdown">
-                  <button type="button" onclick="setMode('normal')" class="mode-option active" id="opt-normal">✨ Normal</button>
-                  <button type="button" onclick="setMode('razonamiento')" class="mode-option" id="opt-razonamiento">🧠 Razonamiento</button>
-                  <button type="button" onclick="setMode('pro')" class="mode-option" id="opt-pro">🚀 Charvis Pro <span class="badge">Swarm</span></button>
+                  <button type="button" onclick="setMode('normal')" class="mode-option active" id="opt-normal">✨
+                    Normal</button>
+                  <button type="button" onclick="setMode('razonamiento')" class="mode-option" id="opt-razonamiento">🧠
+                    Razonamiento</button>
+                  <button type="button" onclick="setMode('pro')" class="mode-option" id="opt-pro">🚀 Charvis Pro <span
+                      class="badge">Swarm</span></button>
                 </div>
               </div>
 
-              <button type="button" id="voice-btn" class="round-btn small voice-btn" onclick="toggleGrabacion()" title="Grabar voz">
+              <button type="button" id="voice-btn" class="round-btn small voice-btn" onclick="toggleGrabacion()"
+                title="Grabar voz">
                 🎙
               </button>
 
