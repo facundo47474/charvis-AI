@@ -25,6 +25,12 @@ const MAX_INPUT_CHARS = 12000;
 /* ========================= */
 
 document.addEventListener("DOMContentLoaded", async () => {
+  if (window.location.protocol === "file:" || (window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1" && !window.location.hostname.includes("ngrok") && !window.location.hostname.includes("render"))) {
+    // permitimos en produccion o localhost
+  } else if (window.location.port !== "3000" && window.location.port !== "") {
+    alert("¡ESTÁS EN LA URL INCORRECTA!\nPara ver los cambios, debes cerrar esta pestaña y entrar a: http://localhost:3000\nEl servidor de Node no funciona a través de Live Server ni doble clic.");
+  }
+
   await inicializarAuth();
   configurarTecladoMobile();
 });
@@ -73,10 +79,28 @@ async function inicializarAuth() {
             client_id: config.googleClientId,
             callback: handleGoogleLogin
           });
+
+          const btnContainer = document.getElementById("google-btn-container");
+          // 1. Calculamos el ancho exacto disponible para igualar ambos botones
+          // (Google tiene un límite máximo duro de 400px en su iframe)
+          let targetWidth = btnContainer.parentElement.clientWidth;
+          if (targetWidth > 400) targetWidth = 400;
+          if (targetWidth < 200) targetWidth = 280; // Fallback seguro
+
+          // 2. Renderizamos el botón de Google con ancho en píxeles absolutos
           google.accounts.id.renderButton(
-            document.getElementById("google-btn-container"),
-            { theme: "outline", size: "large", type: "standard", width: "100%", text: "continue_with" }
+            btnContainer,
+            { theme: "outline", size: "large", type: "standard", width: targetWidth, text: "continue_with" }
           );
+
+          // 3. Forzamos el botón de invitado a medir EXACTAMENTE lo mismo
+          const guestBtn = document.getElementById("guest-login-btn");
+          if (guestBtn) {
+            guestBtn.style.maxWidth = targetWidth + "px";
+            guestBtn.style.width = "100%";
+            guestBtn.style.margin = "0 auto";
+            guestBtn.style.display = "block";
+          }
         } else {
           setTimeout(initGoogle, 100);
         }
@@ -87,6 +111,7 @@ async function inicializarAuth() {
     }
   } catch (e) {
     console.error("Error obteniendo config:", e);
+    document.getElementById("login-error").textContent = "Error de conexión: Verifica que el servidor (node server.js) esté corriendo y no estés abriendo el archivo como HTML estático. Detalle: " + e.message;
   }
 }
 
@@ -483,14 +508,22 @@ function guardarMensajeEnConversacion(mensaje) {
 
   if (!conversacion) return;
 
-  conversacion.mensajes.push(mensaje);
+  const mensajeGuardar = { ...mensaje };
+  if (mensajeGuardar.adjuntos && Array.isArray(mensajeGuardar.adjuntos)) {
+    mensajeGuardar.adjuntos = mensajeGuardar.adjuntos.map(adj => {
+      const { contenido, dataUrl, ...resto } = adj;
+      return resto;
+    });
+  }
+
+  conversacion.mensajes.push(mensajeGuardar);
 
   if (
-    mensaje.tipo === "mensaje" &&
-    esRolUsuario(mensaje.rol) &&
+    mensajeGuardar.tipo === "mensaje" &&
+    esRolUsuario(mensajeGuardar.rol) &&
     conversacion.titulo.startsWith("Conversación")
   ) {
-    const titulo = String(mensaje.texto || "")
+    const titulo = String(mensajeGuardar.texto || "")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 36);
@@ -500,7 +533,13 @@ function guardarMensajeEnConversacion(mensaje) {
     }
   }
 
-  guardarConversaciones();
+  try {
+    guardarConversaciones();
+  } catch (e) {
+    console.error("Error guardando en localStorage:", e);
+    conversacion.mensajes.pop();
+  }
+
   actualizarSidebarConversaciones();
   actualizarTituloConversacion();
 }
@@ -641,16 +680,12 @@ function obtenerPantallaBienvenida() {
       <div class="prompt-actions">
         <div class="prompt-actions-left">
           <button type="button" class="round-btn" onclick="document.getElementById('file-input').click()" title="Adjuntar archivo">+</button>
-
-          <button type="button" class="tool-btn" id="hero-reasoning-toggle" onclick="toggleModoRazonamiento()">
-            Herramientas
-          </button>
         </div>
 
         <div class="prompt-actions-right">
           <div class="mode-selector-container">
             <button type="button" class="mode-btn" id="hero-mode-button" onclick="toggleModeDropdown(true)">
-              Normal
+              ✨ Normal ▾
             </button>
             <div class="mode-dropdown" id="hero-mode-dropdown">
               <button type="button" onclick="setMode('normal')" class="mode-option active" id="hero-opt-normal">✨ Normal</button>
@@ -675,7 +710,6 @@ function obtenerPantallaBienvenida() {
       <button type="button" id="ctx-escribir" onclick="selectContext('escribir', 'Ayúdame a redactar un texto profesional')">Escribir</button>
       <button type="button" id="ctx-aprender" onclick="selectContext('aprender', 'Explícame este tema paso a paso')">Aprender</button>
       <button type="button" id="ctx-personal" onclick="selectContext('personal', 'Organiza mis ideas y tareas pendientes')">Asuntos personales</button>
-      <button type="button" id="ctx-razonamiento" onclick="toggleModoRazonamiento()">Razonamiento</button>
     </div>
   `;
 }
@@ -839,8 +873,9 @@ function renderFilePreviews() {
     const preview = document.createElement('div');
     preview.className = 'file-preview';
 
+    const esImagenAdjunto = String(adjunto.tipo || "").startsWith("image/");
     const html = `
-      ${adjunto.tipo === 'imagen' ? `<img src="${adjunto.dataUrl}" alt="${adjunto.nombre}">` : '<div style="width:32px;height:32px;background:var(--accent);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:16px;">📄</div>'}
+      ${esImagenAdjunto ? `<img src="${adjunto.dataUrl}" alt="${adjunto.nombre}">` : '<div style="width:32px;height:32px;background:var(--accent);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:16px;">📄</div>'}
       <div class="file-info">
         <div class="file-name">${adjunto.nombre}</div>
         <div class="file-size">${formatFileSize(adjunto.size)}</div>
@@ -894,6 +929,23 @@ function enviarTextoCharvis(texto) {
 }
 
 function enviarAlServidor(texto, adjuntos = []) {
+  if (!activeConversationId) {
+    mostrarAvisoTemporal("Error: No hay conversación activa.");
+    return;
+  }
+
+  const conversacionActiva = obtenerConversacionActiva();
+  const historialPrevio = conversacionActiva ? conversacionActiva.mensajes.map(m => ({
+    role: m.rol === "usuario" ? "user" : "assistant",
+    content: m.texto
+  })) : [];
+  
+  // Como agregarMensaje() ya insertó el texto actual del usuario en app.js,
+  // lo removemos del final para que el servidor lo procese correctamente con los adjuntos
+  if (historialPrevio.length > 0 && historialPrevio[historialPrevio.length - 1].role === "user") {
+    historialPrevio.pop();
+  }
+
   const payload = {
     type: "texto",
     texto,
@@ -902,19 +954,26 @@ function enviarAlServidor(texto, adjuntos = []) {
     modo: modoRazonamientoActivo ? "razonamiento" : "normal",
     contexto: activeContext,
     adjuntos: adjuntos,
+    historialPrevio: historialPrevio,
     isGuest: currentUser?.isGuest || false,
     userId: currentUser?.email || "anon",
     audioActivo: audioActivo
   };
 
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(payload));
-    setGeneratingState(true);
+    try {
+      ws.send(JSON.stringify(payload));
+      setGeneratingState(true);
+    } catch (e) {
+      agregarError("Error al enviar mensaje: " + e.message);
+      setGeneratingState(false);
+    }
     return;
   }
 
   if (currentUser && currentUser.isGuest) {
     mostrarAvisoTemporal("El modo invitado no puede enviar mensajes al servidor real.");
+    setGeneratingState(false);
     setTimeout(() => {
       agregarMensaje("charvis", "¡Hola! Como invitado, puedo mostrarte la interfaz, pero para hablar conmigo necesitas iniciar sesión con Google.");
     }, 1000);
@@ -1009,12 +1068,12 @@ function toggleModeDropdown(isHero = false) {
   const dropdownId = isHero ? "hero-mode-dropdown" : "mode-dropdown";
   const dropdown = document.getElementById(dropdownId);
   if (!dropdown) return;
-  
+
   // Close any other open dropdowns
   document.querySelectorAll('.mode-dropdown').forEach(d => {
     if (d.id !== dropdownId) d.classList.remove('show');
   });
-  
+
   dropdown.classList.toggle('show');
 }
 
@@ -1041,19 +1100,16 @@ function setMode(mode) {
   let msg = "Modo normal activado.";
   if (mode === "razonamiento") msg = "Modo razonamiento activado.";
   if (mode === "pro") msg = "Modo Charvis Pro (Enjambre Qwen) activado.";
-  
+
   mostrarAvisoTemporal(msg);
 }
 
 function sincronizarBotonesModo() {
-  let label = "Normal";
-  let activeText = "Modo normal";
+  let label = "✨ Normal ▾";
   if (currentMode === "razonamiento") {
-    label = "Razonamiento";
-    activeText = "Modo razonamiento";
+    label = "🧠 Razonamiento ▾";
   } else if (currentMode === "pro") {
-    label = "Charvis Pro";
-    activeText = "Modo Pro (Enjambre)";
+    label = "🚀 Charvis Pro ▾";
   }
 
   const modeButton = document.getElementById("mode-button");
@@ -1259,11 +1315,19 @@ function retryLastMessage() {
   if (!conversacion || conversacion.mensajes.length === 0) return;
 
   // Buscar el último mensaje del usuario
-  const ultimoUsuario = [...conversacion.mensajes].reverse().find(m => m.rol === "usuario");
+  const ultimoUsuario = [...conversacion.mensajes].reverse().find(m => {
+    const rol = normalizarRol(m.rol);
+    return rol === "usuario";
+  });
 
   if (ultimoUsuario) {
     mostrarAvisoTemporal("Reintentando...");
-    enviarAlServidor(ultimoUsuario.texto, ultimoUsuario.adjuntos || []);
+    // Reconstruir adjuntos si existen (sin dataUrl para no duplicar)
+    const adjuntos = (ultimoUsuario.adjuntos || []).map(adj => {
+      const { contenido, dataUrl, ...rest } = adj;
+      return rest;
+    });
+    enviarAlServidor(ultimoUsuario.texto, adjuntos);
   } else {
     mostrarAvisoTemporal("No hay mensajes previos para reintentar.");
   }
@@ -1472,7 +1536,17 @@ async function toggleGrabacion() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     audioChunks = [];
-    mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+
+    // Soporte para diferentes formatos de audio según el navegador
+    let mimeType = "audio/webm";
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = "audio/mp4";
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = "audio/webm;codecs=opus";
+      }
+    }
+
+    mediaRecorder = new MediaRecorder(stream, { mimeType });
 
     mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) audioChunks.push(e.data);
@@ -1480,12 +1554,12 @@ async function toggleGrabacion() {
 
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
-      const blob = new Blob(audioChunks, { type: "audio/webm" });
+      const blob = new Blob(audioChunks, { type: mimeType });
       if (blob.size < 1000) { mostrarAvisoTemporal("Audio muy corto, intentá de nuevo."); return; }
       const buffer = await blob.arrayBuffer();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(buffer);
-        mostrarEstadoTemporal("transcribiendo");
+        mostrarAvisoTemporal("Transcribiendo...");
       } else {
         agregarError("Sin conexión al servidor.");
       }
@@ -1525,17 +1599,28 @@ function actualizarBotonesVoz(rec) {
 
 function markdownToHtml(text) {
   if (!text) return "";
+
+  // Sanitización básica para prevenir XSS
+  const escapeHtml = (str) => {
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  };
+
   let html = text
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code.trim()}</code></pre>`)
-    .replace(/:::think\n([\s\S]*?)\n:::/g, (_, content) => `<details class="charvis-thought-process"><summary>🧠 Proceso de Razonamiento (Charvis AI)</summary><div class="thought-content">${content.trim()}</div></details>`)
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-    .replace(/^#{3} (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^#{2} (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^#{1} (.+)$/gm, "<h1>$1</h1>")
-    .replace(/^[-*] (.+)$/gm, "<li>$1</li>")
+    .replace(/```([\s\S]*?)```/g, function (_, code) { return "<pre><code>" + escapeHtml(code.trim()) + "</code></pre>"; })
+    .replace(/:::think\n([\s\S]*?)\n:::/g, function (_, content) { return "<details class=\"charvis-thought-process\"><summary>🧠 Proceso de Razonamiento (Charvis AI)</summary><div class=\"thought-content\">" + escapeHtml(content.trim()) + "</div></details>"; })
+    .replace(/`([^`]+)`/g, function (_, code) { return "<code>" + escapeHtml(code) + "</code>"; })
+    .replace(/\*\*([^*]+)\*\*/g, function (_, text) { return "<strong>" + escapeHtml(text) + "</strong>"; })
+    .replace(/\*([^*]+)\*/g, function (_, text) { return "<em>" + escapeHtml(text) + "</em>"; })
+    .replace(/^#{3} (.+)$/gm, function (_, text) { return "<h3>" + escapeHtml(text) + "</h3>"; })
+    .replace(/^#{2} (.+)$/gm, function (_, text) { return "<h2>" + escapeHtml(text) + "</h2>"; })
+    .replace(/^#{1} (.+)$/gm, function (_, text) { return "<h1>" + escapeHtml(text) + "</h1>"; })
+    .replace(/^[-*] (.+)$/gm, function (_, text) { return "<li>" + escapeHtml(text) + "</li>"; })
     .replace(/(<li>.*<\/li>)/gs, "<ul>$1</ul>")
     .replace(/\n{2,}/g, "</p><p>")
     .replace(/\n/g, "<br>");
@@ -1551,6 +1636,7 @@ function mostrarEstadoTemporal(valor) {
   const estados = {
     pensando: "💭 Pensando...",
     razonando: "🧠 Razonando...",
+    escribiendo: "✍️ Escribiendo...",
     hablando: "🔊 Respondiendo...",
     transcribiendo: "🎙 Transcribiendo voz...",
     entendiendo_problema: "🔍 Analizando el problema...",
@@ -1558,7 +1644,9 @@ function mostrarEstadoTemporal(valor) {
     ejecutando_plan: "⚙️ Ejecutando plan...",
     verificando_respuesta: "✅ Revisando respuesta...",
     finalizado: "✓ Listo",
-    escuchando: "👂 Escuchando..."
+    escuchando: "👂 Escuchando...",
+    pensando_multi_modelo: "🧠 Pensando con múltiples modelos...",
+    sintetizando: "🔀 Sintetizando respuestas..."
   };
   const texto = estados[valor] || valor;
   mostrarAvisoTemporal(texto);
@@ -1571,7 +1659,12 @@ function mostrarEstadoTemporal(valor) {
 function initAmbientCanvas() {
   const canvas = document.getElementById('ambient-canvas');
   if (!canvas) return;
+
   const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    console.warn('No se pudo obtener contexto 2D del canvas');
+    return;
+  }
 
   let width = canvas.width = canvas.offsetWidth;
   let height = canvas.height = canvas.offsetHeight;
@@ -1668,3 +1761,8 @@ function initAmbientCanvas() {
 
   render();
 }
+
+// Ocultar botones obsoletos que estn en el HTML esttico
+const stylePatch = document.createElement('style');
+stylePatch.textContent = '.tool-btn, #reasoning-toggle, #hero-reasoning-toggle { display: none !important; }';
+document.head.appendChild(stylePatch);

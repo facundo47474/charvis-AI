@@ -504,15 +504,23 @@ wss.on("connection", (ws, req) => {
 
     // PIPELINE DE RAZONAMIENTO
     try {
+      // Construir el string de contexto histórico para los agentes
+      const historyExceptLast = historial.slice(0, -1);
+      let mensajeConContexto = ultimoMensajeUsuario;
+      if (historyExceptLast.length > 0) {
+        const historyText = historyExceptLast.map(m => `${m.role === 'user' ? 'Usuario' : 'Charvis'}: ${typeof m.content === 'string' ? m.content : '[Adjunto]'}`).join('\n\n');
+        mensajeConContexto = `--- CONTEXTO PREVIO DE LA CHARLA ---\n${historyText}\n\n--- NUEVO MENSAJE A RESPONDER ---\n${ultimoMensajeUsuario}`;
+      }
+
       // 1. PLANNER
       send({ type: "estado", valor: "entendiendo_problema", conversationId });
-      const plan = await llamadaPlanner(ultimoMensajeUsuario);
+      const plan = await llamadaPlanner(mensajeConContexto);
 
       send({ type: "estado", valor: "creando_plan", conversationId });
 
       // 2. EXECUTOR
       send({ type: "estado", valor: "ejecutando_plan", conversationId });
-      const respuestaPreliminar = await llamadaExecutor(ultimoMensajeUsuario, plan);
+      const respuestaPreliminar = await llamadaExecutor(mensajeConContexto, plan);
 
       // 3. REVIEWER
       send({ type: "estado", valor: "verificando_respuesta", conversationId });
@@ -541,7 +549,7 @@ ${respuestaFinal}`;
       consumeCredits(opciones.userId || "anon", 1, opciones.isGuest);
 
     } catch (error) {
-      send({ type: "error", texto: "Error en el proceso de razonamiento: " + error.message, conversationId });
+      send({ type: "error", mensaje: "Error en el proceso de razonamiento: " + error.message, conversationId });
     }
   }
 
@@ -553,14 +561,21 @@ ${respuestaFinal}`;
       ultimoMensajeUsuario = textObj ? textObj.text : "";
     }
 
+    const historyExceptLast = historial.slice(0, -1);
+    let mensajeConContexto = ultimoMensajeUsuario;
+    if (historyExceptLast.length > 0) {
+      const historyText = historyExceptLast.map(m => `${m.role === 'user' ? 'Usuario' : 'Charvis'}: ${typeof m.content === 'string' ? m.content : '[Adjunto]'}`).join('\n\n');
+      mensajeConContexto = `--- CONTEXTO PREVIO DE LA CHARLA ---\n${historyText}\n\n--- NUEVO MENSAJE A RESPONDER ---\n${ultimoMensajeUsuario}`;
+    }
+
     try {
       send({ type: "estado", valor: "pensando_multi_modelo", conversationId });
 
       // Fase 1: Enjambre Qwen en Paralelo (distintas temperaturas para variedad)
       const workers = [
-        llamadaSwarmWorker(ultimoMensajeUsuario, 0.3),
-        llamadaSwarmWorker(ultimoMensajeUsuario, 0.6),
-        llamadaSwarmWorker(ultimoMensajeUsuario, 0.9)
+        llamadaSwarmWorker(mensajeConContexto, 0.3),
+        llamadaSwarmWorker(mensajeConContexto, 0.6),
+        llamadaSwarmWorker(mensajeConContexto, 0.9)
       ];
 
       const respuestasEnjambre = await Promise.all(workers);
@@ -772,18 +787,17 @@ Sintetiza la mejor respuesta definitiva ahora:`;
       body: JSON.stringify({
         model: REVIEWER_MODEL,  // Fast model — high rate limit quota
         messages: [
-          { role: "system", content: "Eres un revisor crítico senior. Revisa la siguiente respuesta buscando errores lógicos, omisiones, mejores prácticas faltantes, o si no respondió exactamente lo pedido. Si está perfecta, devuélvela tal cual. Si tiene errores, corrígela y devuelve solo la versión corregida. NO agregues metacommentarios del tipo 'como revisor'." },
-          { role: "user", content: `PREGUNTA ORIGINAL:\n${preguntaTruncada}\n\nRESPUESTA A REVISAR:\n${respuestaTruncada}\n\nDevuelve la respuesta corregida y mejorada.` }
+          { role: "system", content: "Eres un revisor experto. El texto a revisar es la salida en bruto de un asistente que razonó paso a paso. Tu tarea es extraer ÚNICAMENTE la respuesta final útil para el usuario, eliminando todo el proceso de pensamiento o menciones a 'pasos'. Corrige cualquier error y devuelve SOLO la respuesta final directa, concisa y natural en español. NO agregues metacomentarios." },
+          { role: "user", content: `PREGUNTA ORIGINAL:\n${preguntaTruncada}\n\nRESPUESTA EN BRUTO A REVISAR:\n${respuestaTruncada}\n\nExtrae y mejora solo la respuesta final.` }
         ],
         max_tokens: 4096,
-        temperature: 0.4, // Increased from 0.2 to prevent LLM loop hallucinations
-        presence_penalty: 0.1 // Reduces chance of infinite loop tokens like __
+        temperature: 0.3, 
+        presence_penalty: 0.1 
       })
     });
 
     if (!response.ok) {
       if (response.status === 401) throw new Error("Groq API Key inválida o expirada.");
-      // If reviewer still fails after all retries, return unreviewed response gracefully
       if (response.status === 429 || response.status === 413) return respuesta;
       throw new Error(`Reviewer error: ${response.status}`);
     }
@@ -791,7 +805,7 @@ Sintetiza la mejor respuesta definitiva ahora:`;
     const revision = data.choices?.[0]?.message?.content || respuesta;
     
     // Fallback if the model hallucinates garbage symbols due to Unicode/context issues
-    if (revision.includes("__") || revision.includes("")) {
+    if (revision.includes("__") || revision.trim() === "") {
       console.warn("⚠️ Reviewer generated garbage tokens. Falling back to Executor response.");
       return respuesta;
     }
@@ -930,6 +944,20 @@ Sintetiza la mejor respuesta definitiva ahora:`;
     if (isBinary) {
       const conversationId = conversationIdActivo;
       if (estaProcesando(conversationId)) return;
+
+      const { userId, isGuest } = obtenerUserInfo();
+      if (!hasEnoughCredits(userId, 1, isGuest)) {
+        send({ type: "error", mensaje: "Créditos insuficientes. Por favor, actualizá tu plan para continuar.", conversationId, code: "OUT_OF_CREDITS" });
+        return;
+      }
+      
+      // Validar tamaño del archivo de audio (max 25MB)
+      const MAX_AUDIO_SIZE = 25 * 1024 * 1024;
+      if (data.length > MAX_AUDIO_SIZE) {
+        send({ type: "error", mensaje: "El archivo de audio es demasiado grande (máximo 25MB).", conversationId });
+        return;
+      }
+      
       iniciarProcesamiento(conversationId);
       const tmpFile = path.join(__dirname, `tmp_${crypto.randomUUID()}.webm`);
       try {
@@ -965,7 +993,7 @@ Sintetiza la mejor respuesta definitiva ahora:`;
           send({ type: "error", mensaje: "Error de autenticación: Tu GROQ_API_KEY es inválida o expiró.", conversationId });
           return;
         }
-        send({ type: "error", mensaje: err.message, conversationId });
+        send({ type: "error", mensaje: err.message || "Error al procesar audio.", conversationId });
       } finally {
         if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
         finalizarProcesamiento(conversationId);
@@ -1028,11 +1056,15 @@ Sintetiza la mejor respuesta definitiva ahora:`;
             if (msg.adjuntos && Array.isArray(msg.adjuntos) && msg.adjuntos.length > 0) {
               const partesAdjuntos = [];
 
-              msg.adjuntos.forEach(adj => {
-                if (adj.tipo === 'texto' && adj.contenido) {
-                  partesAdjuntos.push(`--- Archivo: ${adj.nombre} ---\n${adj.contenido}\n--- Fin archivo ---`);
+              for (const adj of msg.adjuntos) {
+                try {
+                  const extract = await analizarArchivo(adj, textoUsuario, modo);
+                  partesAdjuntos.push(extract);
+                } catch (errorAnalisis) {
+                  console.warn(`Error procesando archivo ${adj.nombre || "adjunto"}:`, errorAnalisis.message);
+                  partesAdjuntos.push(`--- Archivo: ${adj.nombre || "adjunto"} ---\n[Error al procesar: ${errorAnalisis.message}]\n--- Fin archivo ---`);
                 }
-              });
+              }
 
               if (partesAdjuntos.length > 0) {
                 contenidoUsuario += `\n\n[Archivos adjuntos:]\n\n${partesAdjuntos.join('\n\n')}`;
@@ -1040,28 +1072,15 @@ Sintetiza la mejor respuesta definitiva ahora:`;
             }
 
             let historial = obtenerHistorial(conversationId);
-            historial.push({ role: "user", content: contenidoUsuario });
-
-            // Para imágenes, usar formato de visión de OpenAI
-            const tieneImagenes = msg.adjuntos?.some(a => a.tipo === 'imagen');
-
-            if (tieneImagenes) {
-              const textoVision = contenidoUsuario.trim() ? contenidoUsuario : "Por favor, analiza la imagen adjunta detalladamente.";
-              const mensajeVision = {
-                role: "user",
-                content: [{ type: "text", text: textoVision }]
-              };
-
-              msg.adjuntos.filter(a => a.tipo === 'imagen').forEach(img => {
-                mensajeVision.content.push({
-                  type: "image_url",
-                  image_url: { url: img.dataUrl, detail: "auto" }
-                });
-              });
-
-              historial.pop();
-              historial.push(mensajeVision);
+            
+            // Reconstruir el historial si el servidor lo perdió (ej: por reinicio o reconexión)
+            if (msg.historialPrevio && Array.isArray(msg.historialPrevio)) {
+              if (msg.historialPrevio.length > historial.length) {
+                historial = msg.historialPrevio;
+              }
             }
+
+            historial.push({ role: "user", content: contenidoUsuario });
 
             historial = recortarHistorial(historial);
             guardarHistorial(conversationId, historial);
@@ -1073,12 +1092,12 @@ Sintetiza la mejor respuesta definitiva ahora:`;
               isGuest
             });
           } catch (err) {
-            console.error("[OPENAI ERROR]", err);
+            console.error("[GROQ ERROR]", err);
             if (err.message.includes("401")) {
-              send({ type: "error", mensaje: "Error de autenticación: Tu OPENAI_API_KEY es inválida.", conversationId });
+              send({ type: "error", mensaje: "Error de autenticación: Tu GROQ_API_KEY es inválida.", conversationId });
               return;
             }
-            send({ type: "error", mensaje: err.message, conversationId });
+            send({ type: "error", mensaje: err.message || "Error al procesar tu solicitud.", conversationId });
           } finally {
             finalizarProcesamiento(conversationId);
           }
@@ -1115,3 +1134,5 @@ server.listen(PORT, "0.0.0.0", async () => {
 
   console.log(`\n✅ Servidor listo y funcionando!\n`);
 });
+
+// Force restart

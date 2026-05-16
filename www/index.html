@@ -3,10 +3,13 @@
 
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Charvis AI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+  <meta name="description"
+    content="Charvis AI - Asistente de inteligencia artificial con razonamiento profundo, análisis de archivos y capacidades multimodales." />
+  <meta name="theme-color" content="#10100f" />
+  <title>Charvis AI - Asistente de IA con Razonamiento Profundo</title>
 
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=2" />
 
   <!-- Fuente similar a Claude -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -22,7 +25,8 @@
     <div class="login-left">
       <div class="login-content">
         <div class="login-brand">
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" role="img"
+            aria-label="Logo de Charvis AI">
             <rect width="40" height="40" rx="12" fill="#EAE0D5" />
             <path d="M20 12L22.25 17.75L28 20L22.25 22.25L20 28L17.75 22.25L12 20L17.75 17.75L20 12Z" fill="#1E1E1E" />
           </svg>
@@ -194,7 +198,7 @@
     accept=".txt,.js,.ts,.tsx,.jsx,.html,.css,.json,.md,.pdf,.png,.jpg,.jpeg,.webp,.csv,.py,.xml,.yaml,.yml,.docx"
     onchange="handleFiles(this.files)" />
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2"></script>
   <script>
     function handleAvatarError(img) {
       if (!img) return;
@@ -202,6 +206,13 @@
       const fallback = img.parentElement.querySelector(".avatar-fallback");
       if (fallback) fallback.style.display = "flex";
     }
+
+    // Prevenir zoom accidental en iOS
+    document.addEventListener('touchmove', function (e) {
+      if (e.scale !== 1) {
+        e.preventDefault();
+      }
+    }, { passive: false });
   </script>
 </body>
 
