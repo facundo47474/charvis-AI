@@ -1075,6 +1075,12 @@ function formatFileSize(bytes) {
 function enviarTextoCharvis(texto) {
   if (!texto && archivosAdjuntos.length === 0) return;
 
+  const maxLimit = 300;
+  if (totalUsageGlobal >= maxLimit) {
+    mostrarAvisoTemporal("Alcanzaste el límite de 300 mensajes gratuitos. Actualiza a Pro para continuar.");
+    return;
+  }
+
   cerrarTodasLasVentanas();
 
   // Agregar mensaje del usuario con archivos adjuntos al DOM
@@ -1904,6 +1910,12 @@ function initAmbientCanvas() {
     width = canvas.width = canvas.offsetWidth;
     height = canvas.height = canvas.offsetHeight;
   });
+
+  if (width === 0 || height === 0) {
+    // If the canvas is hidden or layout is not ready, retry after a small delay
+    setTimeout(initAmbientCanvas, 500);
+    return;
+  }
 
   const orbs = [];
   // Colores intensos y vibrantes tipo Gemini/Siri

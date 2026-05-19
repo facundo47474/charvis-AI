@@ -34,7 +34,9 @@
 html,
 body {
     margin: 0;
-    min-height: 100%;
+    padding: 0;
+    height: 100%;
+    overscroll-behavior: none;
     font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--bg-main);
     color: var(--text-main);
@@ -44,8 +46,6 @@ body {
     overflow: hidden;
     width: 100%;
     min-width: 0;
-    min-height: 100vh;
-    min-height: 100dvh;
 }
 
 button,
@@ -74,8 +74,7 @@ textarea:focus-visible {
 .app {
     display: flex;
     width: 100%;
-    height: 100vh;
-    height: 100dvh;
+    height: 100%;
     background: var(--bg-main);
     position: relative;
     overflow: hidden;
@@ -160,8 +159,7 @@ textarea:focus-visible {
 .sidebar {
     width: var(--sidebar-width);
     min-width: var(--sidebar-width);
-    height: 100vh;
-    height: 100dvh;
+    height: 100%;
     background: var(--bg-sidebar);
     border-right: 1px solid var(--border);
     display: flex;
@@ -485,8 +483,7 @@ textarea:focus-visible {
 .main {
     flex: 1;
     min-width: 0;
-    height: 100vh;
-    height: 100dvh;
+    height: 100%;
     display: flex;
     flex-direction: column;
     position: relative;
@@ -694,6 +691,8 @@ textarea:focus-visible {
     overflow-y: auto;
     overflow-x: hidden;
     scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
     padding: 32px 18px 220px;
     /* Increased bottom padding to clear the prompt box and suggestions */
 }
@@ -1609,8 +1608,7 @@ body.welcome-active .composer {
         position: fixed;
         left: 0;
         top: 0;
-        height: 100vh;
-        height: 100dvh;
+        height: 100%;
         transform: translateX(-100%);
         z-index: 1000;
         box-shadow: 10px 0 30px rgba(0, 0, 0, 0.5);
@@ -2028,6 +2026,15 @@ body.welcome-active .composer {
     justify-content: center;
     position: relative;
     overflow: hidden;
+}
+
+.fullscreen-preview {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.95);
 }
 
 .ambient-canvas {
