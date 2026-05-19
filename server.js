@@ -24,6 +24,21 @@ const { esEco } = require("./eco");
 const pdfParse = require("pdf-parse");
 const mammoth = require("mammoth");
 
+const {
+  modoValido,
+  normalizarNombreArchivo,
+  extensionArchivo,
+  extraerMimeDataUrl,
+  bufferDesdeContenido,
+  recortarTextoExtraido,
+  esImagen,
+  esPdf,
+  esDocx,
+  esTextoPlano,
+  MAX_FILE_BYTES,
+  MAX_EXTRACTED_CHARS
+} = require("./utils");
+
 // --- Abort Controllers para cancelar generación ---
 const abortControllers = new Map();
 
@@ -80,19 +95,17 @@ const CHAT_MODEL = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
 // gpt-oss-120b has an 8k TPM hard limit on free tier — only used for Swarm Judge (controlled input)
 const REASONING_MODEL = process.env.GROQ_REASONING_MODEL || "openai/gpt-oss-120b";
 // All 3 reasoning pipeline stages use the versatile model (high rate limit, handles large docs)
-const PLANNER_MODEL  = process.env.GROQ_PLANNER_MODEL  || "llama-3.3-70b-versatile";
+const PLANNER_MODEL = process.env.GROQ_PLANNER_MODEL || "llama-3.3-70b-versatile";
 const EXECUTOR_MODEL = process.env.GROQ_EXECUTOR_MODEL || "llama-3.3-70b-versatile";
 const REVIEWER_MODEL = process.env.GROQ_REVIEWER_MODEL || "llama-3.3-70b-versatile";
-const VISION_MODEL   = process.env.GROQ_VISION_MODEL   || "meta-llama/llama-4-scout-17b-16e-instruct";
-const SWARM_WORKER_MODEL = process.env.GROQ_SWARM_MODEL || "qwen/qwen3-32b";
+const VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+const SWARM_WORKER_MODEL = process.env.GROQ_SWARM_MODEL || "llama-3.3-70b-versatile";
 const APP_USER = process.env.APP_USER || "admin";
 const APP_PASSWORD = process.env.APP_PASSWORD || "facu";
-const MAX_EXTRACTED_CHARS = 60000;
-const MAX_EXTRACTED_CHARS_REASONING = 80000;
-const MAX_INPUT_CHARS_PLANNER  = 10000;  // ~2500 tokens
+const MAX_EXTRACTED_CHARS_REASONING = 30000;
+const MAX_INPUT_CHARS_PLANNER = 10000;  // ~2500 tokens
 const MAX_INPUT_CHARS_EXECUTOR = 24000;  // ~6000 tokens — safe for versatile model
 const MAX_INPUT_CHARS_REVIEWER = 10000;  // ~2500 tokens
-const MAX_FILE_BYTES = 12 * 1024 * 1024;
 
 // --- Sesiones en memoria ---
 const sessions = new Map();
@@ -114,6 +127,7 @@ const wss = new WebSocketServer({ server });
 
 // Archivos estáticos sin auth (la SPA maneja su propio estado de login)
 app.use(express.static(path.join(__dirname, "www")));
+app.use("/assets", express.static(path.join(__dirname, "assets")));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (_req, res) => {
@@ -175,66 +189,6 @@ app.post("/api/auth/logout", (req, res) => {
   res.json({ ok: true });
 });
 
-
-function modoValido(modo) {
-  if (modo === "razonamiento") return "razonamiento";
-  if (modo === "pro") return "pro";
-  return "normal";
-}
-
-function normalizarNombreArchivo(nombre) {
-  return path.basename(String(nombre || "archivo")).replace(/[^\w.\- ()]/g, "_").slice(0, 140);
-}
-
-function extensionArchivo(nombre) {
-  return path.extname(String(nombre || "")).toLowerCase();
-}
-
-function extraerMimeDataUrl(contenido) {
-  const match = String(contenido || "").match(/^data:([^;,]+)[^,]*,/i);
-  return match ? match[1].toLowerCase() : "";
-}
-
-function bufferDesdeContenido(contenido) {
-  const texto = String(contenido || "");
-  if (texto.startsWith("data:")) {
-    const comma = texto.indexOf(",");
-    if (comma === -1) throw new Error("Archivo adjunto invalido.");
-    const meta = texto.slice(0, comma).toLowerCase();
-    const data = texto.slice(comma + 1);
-    if (meta.includes(";base64")) return Buffer.from(data, "base64");
-    return Buffer.from(decodeURIComponent(data), "utf8");
-  }
-  return Buffer.from(texto, "utf8");
-}
-
-function recortarTextoExtraido(texto, limite = MAX_EXTRACTED_CHARS) {
-  const limpio = String(texto || "").replace(/\u0000/g, "").replace(/[ \t]+\n/g, "\n").trim();
-  if (limpio.length <= limite) return limpio;
-  return limpio.slice(0, limite) + "\n\n[Texto recortado por seguridad: el archivo es mas largo.]";
-}
-
-function esImagen(tipo, ext) {
-  return String(tipo || "").startsWith("image/") || [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext);
-}
-
-function esPdf(tipo, ext) {
-  return tipo === "application/pdf" || ext === ".pdf";
-}
-
-function esDocx(tipo, ext) {
-  return tipo === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ext === ".docx";
-}
-
-function esTextoPlano(tipo, ext) {
-  const extensionesTexto = new Set([
-    ".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".css", ".js", ".jsx", ".ts", ".tsx",
-    ".py", ".java", ".c", ".cpp", ".cs", ".go", ".rs", ".php", ".rb", ".sql", ".yaml", ".yml", ".log"
-  ]);
-  return String(tipo || "").startsWith("text/") ||
-    ["application/json", "application/xml", "application/javascript", "application/x-javascript"].includes(tipo) ||
-    extensionesTexto.has(ext);
-}
 
 async function analizarImagenConVision({ nombre, tipo, contenido }, pregunta) {
   const dataUrl = String(contenido || "").startsWith("data:")
@@ -309,12 +263,14 @@ async function analizarArchivo(archivo, pregunta, modo = "normal") {
 
   if (esImagen(tipo, ext)) {
     const observaciones = await analizarImagenConVision({ nombre, tipo, contenido: archivo.contenido }, pregunta);
-    return (
+    const resultado = (
       `[Imagen analizada: ${nombre}]\n` +
       `Tipo: ${tipo || ext || "imagen"}\n` +
       `Tamano aproximado: ${(buffer.length / 1024 / 1024).toFixed(2)} MB\n\n` +
       `${observaciones}`
     );
+    guardarTextoEnCache(archivo.nombre, archivo.size || buffer.length, resultado);
+    return resultado;
   }
 
   const limite = modo === "razonamiento"
@@ -323,13 +279,15 @@ async function analizarArchivo(archivo, pregunta, modo = "normal") {
   const texto = recortarTextoExtraido(await extraerTextoDocumento(buffer, tipo, ext), limite);
   if (!texto) throw new Error(`No pude extraer texto legible de "${nombre}".`);
 
-  return (
+  const resultado = (
     `[Documento analizado: ${nombre}]\n` +
     `Tipo: ${tipo || ext || "documento"}\n` +
     `Tamano aproximado: ${(buffer.length / 1024 / 1024).toFixed(2)} MB\n\n` +
     "Contenido extraido:\n" +
     "```\n" + texto + "\n```"
   );
+  guardarTextoEnCache(archivo.nombre, archivo.size || buffer.length, resultado);
+  return resultado;
 }
 function contenidoComoTexto(content) {
   if (typeof content === "string") return content;
@@ -397,7 +355,39 @@ function elevenLabsTTS(text) {
 }
 
 function crearHistorial() {
-  return [];
+  return [{ role: "system", content: "" }];
+}
+
+const historialesGlobales = new Map();
+
+const cacheDir = path.join(__dirname, ".cache");
+if (!fs.existsSync(cacheDir)) {
+  fs.mkdirSync(cacheDir, { recursive: true });
+}
+
+function guardarTextoEnCache(nombre, size, texto) {
+  try {
+    const sanitizedNombre = path.basename(String(nombre || "archivo")).replace(/[^\w.\- ()]/g, "_");
+    const filename = `${sanitizedNombre}-${size || 0}.txt`;
+    const filePath = path.join(cacheDir, filename);
+    fs.writeFileSync(filePath, String(texto || ""), "utf8");
+  } catch (err) {
+    console.error("⚠️ Error escribiendo en caché de archivos:", err.message);
+  }
+}
+
+function obtenerTextoDeCache(nombre, size) {
+  try {
+    const sanitizedNombre = path.basename(String(nombre || "archivo")).replace(/[^\w.\- ()]/g, "_");
+    const filename = `${sanitizedNombre}-${size || 0}.txt`;
+    const filePath = path.join(cacheDir, filename);
+    if (fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath, "utf8");
+    }
+  } catch (err) {
+    console.error("⚠️ Error leyendo de caché de archivos:", err.message);
+  }
+  return null;
 }
 
 wss.on("connection", (ws, req) => {
@@ -413,13 +403,13 @@ wss.on("connection", (ws, req) => {
     }
   }
 
-  const historiales = new Map();
+  const historiales = historialesGlobales;
   const procesandoPorConversacion = new Set();
   let conversationIdActivo = "default";
 
   function obtenerUserInfo() {
     return {
-      userId: session ? session.email : (token === "guest" ? "guest" : "anon"),
+      userId: session ? (session.email || session.name) : (token === "guest" ? "guest" : "anon"),
       isGuest: token === "guest" || (session && session.isGuest)
     };
   }
@@ -503,9 +493,12 @@ wss.on("connection", (ws, req) => {
     }
 
     // PIPELINE DE RAZONAMIENTO
+    const controller = new AbortController();
+    abortControllers.set(conversationId, controller);
+
     try {
       // Construir el string de contexto histórico para los agentes
-      const historyExceptLast = historial.slice(0, -1);
+      const historyExceptLast = historial.slice(0, -1).filter(m => m.role !== "system");
       let mensajeConContexto = ultimoMensajeUsuario;
       if (historyExceptLast.length > 0) {
         const historyText = historyExceptLast.map(m => `${m.role === 'user' ? 'Usuario' : 'Charvis'}: ${typeof m.content === 'string' ? m.content : '[Adjunto]'}`).join('\n\n');
@@ -514,17 +507,17 @@ wss.on("connection", (ws, req) => {
 
       // 1. PLANNER
       send({ type: "estado", valor: "entendiendo_problema", conversationId });
-      const plan = await llamadaPlanner(mensajeConContexto);
+      const plan = await llamadaPlanner(mensajeConContexto, controller.signal);
 
       send({ type: "estado", valor: "creando_plan", conversationId });
 
       // 2. EXECUTOR
       send({ type: "estado", valor: "ejecutando_plan", conversationId });
-      const respuestaPreliminar = await llamadaExecutor(mensajeConContexto, plan);
+      const respuestaPreliminar = await llamadaExecutor(mensajeConContexto, plan, controller.signal);
 
       // 3. REVIEWER
       send({ type: "estado", valor: "verificando_respuesta", conversationId });
-      const respuestaFinal = await llamadaReviewer(respuestaPreliminar, ultimoMensajeUsuario);
+      const respuestaFinal = await llamadaReviewer(respuestaPreliminar, ultimoMensajeUsuario, controller.signal);
 
       // Ensamblar la respuesta con el bloque visible de pensamiento
       const respuestaCompleta = `:::think
@@ -549,7 +542,13 @@ ${respuestaFinal}`;
       consumeCredits(opciones.userId || "anon", 1, opciones.isGuest);
 
     } catch (error) {
-      send({ type: "error", mensaje: "Error en el proceso de razonamiento: " + error.message, conversationId });
+      if (error.name === 'AbortError') {
+        send({ type: "error", mensaje: "Generación detenida por el usuario.", conversationId, code: "CANCELLED" });
+      } else {
+        send({ type: "error", mensaje: "Error en el proceso de razonamiento: " + error.message, conversationId });
+      }
+    } finally {
+      abortControllers.delete(conversationId);
     }
   }
 
@@ -561,29 +560,46 @@ ${respuestaFinal}`;
       ultimoMensajeUsuario = textObj ? textObj.text : "";
     }
 
-    const historyExceptLast = historial.slice(0, -1);
+    const historyExceptLast = historial.slice(0, -1).filter(m => m.role !== "system");
     let mensajeConContexto = ultimoMensajeUsuario;
     if (historyExceptLast.length > 0) {
       const historyText = historyExceptLast.map(m => `${m.role === 'user' ? 'Usuario' : 'Charvis'}: ${typeof m.content === 'string' ? m.content : '[Adjunto]'}`).join('\n\n');
       mensajeConContexto = `--- CONTEXTO PREVIO DE LA CHARLA ---\n${historyText}\n\n--- NUEVO MENSAJE A RESPONDER ---\n${ultimoMensajeUsuario}`;
     }
 
+    const controller = new AbortController();
+    abortControllers.set(conversationId, controller);
+
     try {
       send({ type: "estado", valor: "pensando_multi_modelo", conversationId });
 
-      // Fase 1: Enjambre Qwen en Paralelo (distintas temperaturas para variedad)
-      const workers = [
-        llamadaSwarmWorker(mensajeConContexto, 0.3),
-        llamadaSwarmWorker(mensajeConContexto, 0.6),
-        llamadaSwarmWorker(mensajeConContexto, 0.9)
-      ];
+      // Truncar para no exceder los límites de tokens de entrada (TPM)
+      const inputTruncado = truncarParaRazonamiento(mensajeConContexto, 5000);
 
-      const respuestasEnjambre = await Promise.all(workers);
+      // Fase 1: Enjambre Qwen en Secuencia con espaciado (2 workers para no exceder 6000 TPM)
+      const respuestasEnjambre = [];
+      for (const temp of [0.3, 0.8]) {
+        if (respuestasEnjambre.length > 0) {
+          await new Promise(resolve => setTimeout(resolve, 800));
+        }
+        const resp = await llamadaSwarmWorker(inputTruncado, temp, controller.signal);
+        respuestasEnjambre.push(resp);
+      }
 
       // Fase 2: Síntesis con el Modelo Juez
       send({ type: "estado", valor: "sintetizando", conversationId });
 
-      const respuestaFinal = await llamadaSwarmJudge(ultimoMensajeUsuario, respuestasEnjambre);
+      const respuestaSintesis = await llamadaSwarmJudge(ultimoMensajeUsuario, respuestasEnjambre, controller.signal);
+
+      // Fase 3: Verificación y Crítica (con fallback graceful si falla por cuota/rate limit)
+      let respuestaFinal = respuestaSintesis;
+      try {
+        send({ type: "estado", valor: "verificando_respuesta", conversationId });
+        respuestaFinal = await llamadaSwarmCritic(respuestaSintesis, ultimoMensajeUsuario, controller.signal);
+      } catch (criticError) {
+        console.warn("⚠️ Crítico no disponible, usando respuesta del Juez:", criticError.message);
+        // La respuesta del Juez ya es de alta calidad — se usa directamente
+      }
 
       send({ type: "estado", valor: "finalizado", conversationId });
       send({ type: "mensaje", rol: "charvis", texto: respuestaFinal, conversationId });
@@ -593,18 +609,24 @@ ${respuestaFinal}`;
       guardarHistorial(conversationId, historial);
 
       // Consumir créditos (el modo PRO cuesta más)
-      consumeCredits(opciones.userId || "anon", 3, opciones.isGuest);
+      consumeCredits(opciones.userId || "anon", 4, opciones.isGuest);
 
     } catch (error) {
-      console.error("Swarm Error:", error);
-      send({ type: "error", texto: "Error en Charvis Pro (Swarm): " + error.message, conversationId });
+      if (error.name === 'AbortError') {
+        send({ type: "error", mensaje: "Generación detenida por el usuario.", conversationId, code: "CANCELLED" });
+      } else {
+        console.error("Swarm Error:", error);
+        send({ type: "error", texto: "Error en Charvis Pro (Swarm): " + error.message, conversationId });
+      }
+    } finally {
+      abortControllers.delete(conversationId);
     }
   }
 
-  async function llamadaSwarmWorker(mensajeUsuario, temperature) {
-    const systemPrompt = "Eres un experto analista. Analiza la petición y da la mejor respuesta directa y precisa posible.";
+  async function llamadaSwarmWorker(mensajeUsuario, temperature, signal) {
+    const systemPrompt = "Eres un experto analista. Analiza la petición paso a paso (chain of thought) razonando de forma profunda y detallada antes de dar tu respuesta. Es imperativo que muestres tus pasos de razonamiento, seguidos de la mejor respuesta directa y precisa posible. TU IDIOMA OBLIGATORIO ES EL ESPAÑOL. NO RESPONDAS EN INGLÉS BAJO NINGÚN CONCEPTO.";
 
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const response = await fetchConReintentos("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + GROQ_KEY,
@@ -616,36 +638,43 @@ ${respuestaFinal}`;
           { role: "system", content: systemPrompt },
           { role: "user", content: mensajeUsuario }
         ],
-        max_tokens: 3000,
+        max_tokens: 1200,
         temperature: temperature
-      })
+      }),
+      signal
     });
 
-    if (!response.ok) throw new Error("Fallo en un Worker del Enjambre");
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}));
+      throw new Error(`Fallo en un Worker del Enjambre (${response.status}): ${errBody?.error?.message || response.statusText || "Error desconocido"}`);
+    }
     const data = await response.json();
     return data.choices[0].message.content;
   }
 
-  async function llamadaSwarmJudge(mensajeUsuario, respuestas) {
-    const systemPrompt = "Eres Charvis Pro, un Juez y Sintetizador experto. Acabas de recibir respuestas de 3 modelos de IA subordinados para la misma petición del usuario. " +
-      "Tu tarea es analizar las 3 respuestas, extraer la información correcta, filtrar cualquier error o alucinación, y redactar una única respuesta final definitiva, brillante y cohesionada en español rioplatense (voseo). " +
-      "NUNCA menciones que usaste 3 modelos o que eres un juez evaluando respuestas. Da la respuesta definitiva como si fuera tuya directamente.";
+  async function llamadaSwarmJudge(mensajeUsuario, respuestas, signal) {
+    const systemPrompt = "Eres Charvis Pro, un Juez y Sintetizador experto. Acabas de recibir respuestas de 2 modelos de IA subordinados para la misma petición del usuario. " +
+      "Tu tarea es analizar ambas respuestas, extraer la información correcta, filtrar cualquier error o alucinación, y redactar una única respuesta final definitiva, brillante y cohesionada. " +
+      "NUNCA menciones que usaste modelos o que eres un juez evaluando respuestas. Da la respuesta definitiva como si fuera tuya directamente. " +
+      "REGLA DE ORO: TU RESPUESTA FINAL DEBE ESTAR ESTRICTAMENTE EN ESPAÑOL RIOPLATENSE (voseo). PROHIBIDO USAR INGLÉS.";
+
+    // Truncar cada respuesta del Worker a ~1500 chars para respetar el límite de 8000 TPM del Juez
+    const MAX_WORKER_CHARS = 1500;
+    const r1 = respuestas[0].slice(0, MAX_WORKER_CHARS);
+    const r2 = respuestas[1].slice(0, MAX_WORKER_CHARS);
 
     const promptJuez = `PREGUNTA DEL USUARIO:
-${mensajeUsuario}
+${mensajeUsuario.slice(0, 1000)}
 
 --- RESPUESTA MODELO 1 ---
-${respuestas[0]}
+${r1}
 
 --- RESPUESTA MODELO 2 ---
-${respuestas[1]}
-
---- RESPUESTA MODELO 3 ---
-${respuestas[2]}
+${r2}
 
 Sintetiza la mejor respuesta definitiva ahora:`;
 
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const response = await fetchConReintentos("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + GROQ_KEY,
@@ -657,12 +686,54 @@ Sintetiza la mejor respuesta definitiva ahora:`;
           { role: "system", content: systemPrompt },
           { role: "user", content: promptJuez }
         ],
-        max_tokens: 4000,
+        max_tokens: 2000,
         temperature: 0.3
-      })
+      }),
+      signal
     });
 
-    if (!response.ok) throw new Error("Fallo en el Juez Sintetizador");
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}));
+      throw new Error(`Fallo en el Juez Sintetizador (${response.status}): ${errBody?.error?.message || response.statusText || "Error desconocido"}`);
+    }
+    const data = await response.json();
+    return data.choices[0].message.content;
+  }
+
+  async function llamadaSwarmCritic(respuestaSintetizada, mensajeUsuario, signal) {
+    const systemPrompt = "Verificá y mejorá esta respuesta. Buscá errores u omisiones. Reescribila perfecta. TU IDIOMA OBLIGATORIO ES EL ESPAÑOL RIOPLATENSE (voseo). Respondé SOLO con la versión final. PROHIBIDO USAR INGLÉS.";
+
+    // Truncar agresivamente para caber en 6000 TPM de Qwen
+    const respuestaTruncada = respuestaSintetizada.slice(0, 1800);
+    const preguntaTruncada = mensajeUsuario.slice(0, 500);
+
+    const promptCritico = `Pregunta: ${preguntaTruncada}\n\nRespuesta a mejorar:\n${respuestaTruncada}\n\nVersión final:`;
+
+    // Esperar para no competir con los Workers por la ventana de TPM de Qwen
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const response = await fetchConReintentos("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + GROQ_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: SWARM_WORKER_MODEL, // Usa Qwen (cuota diaria separada de llama-3.3)
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: promptCritico }
+        ],
+        max_tokens: 1200,
+        temperature: 0.2
+      }),
+      signal
+    });
+
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}));
+      throw new Error(`Fallo en el Crítico de Calidad (${response.status}): ${errBody?.error?.message || response.statusText || "Error desconocido"}`);
+    }
     const data = await response.json();
     return data.choices[0].message.content;
   }
@@ -684,7 +755,7 @@ Sintetiza la mejor respuesta definitiva ahora:`;
     const mitad = Math.floor(limite / 2);
     let inicio = texto.slice(0, mitad);
     let fin = texto.slice(-mitad);
-    
+
     // Prevent cutting a UTF-16 high surrogate in half
     if (inicio.length > 0 && inicio.charCodeAt(inicio.length - 1) >= 0xD800 && inicio.charCodeAt(inicio.length - 1) <= 0xDBFF) {
       inicio = inicio.slice(0, -1);
@@ -692,7 +763,7 @@ Sintetiza la mejor respuesta definitiva ahora:`;
     if (fin.length > 0 && fin.charCodeAt(0) >= 0xDC00 && fin.charCodeAt(0) <= 0xDFFF) {
       fin = fin.slice(1);
     }
-    
+
     return inicio + `\n\n[...texto truncado para el análisis, ${Math.round((texto.length - limite) / 1000)}k caracteres omitidos...]\n\n` + fin;
   }
 
@@ -716,7 +787,7 @@ Sintetiza la mejor respuesta definitiva ahora:`;
     }
   }
 
-  async function llamadaPlanner(mensajeUsuario) {
+  async function llamadaPlanner(mensajeUsuario, signal) {
     const inputTruncado = truncarParaRazonamiento(mensajeUsuario);
     const response = await fetchConReintentos("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -727,12 +798,13 @@ Sintetiza la mejor respuesta definitiva ahora:`;
       body: JSON.stringify({
         model: PLANNER_MODEL,  // Fast model — high rate limit quota
         messages: [
-          { role: "system", content: "Eres un planificador experto. Analiza la tarea del usuario y genera un plan de máximo 5 pasos concretos numerados. Sé técnico y breve. NO respondas la pregunta todavía, solo el plan." },
+          { role: "system", content: "Eres un planificador experto. Analiza la tarea del usuario y genera un plan de máximo 5 pasos concretos numerados. Sé técnico y breve. NO respondas la pregunta todavía, solo el plan. REDACTA EL PLAN EN ESPAÑOL." },
           { role: "user", content: inputTruncado }
         ],
         max_tokens: 1500,
         temperature: 0.3
-      })
+      }),
+      signal
     });
 
     if (!response.ok) {
@@ -744,7 +816,7 @@ Sintetiza la mejor respuesta definitiva ahora:`;
     return data.choices?.[0]?.message?.content || "1. Analizar solicitud\n2. Proporcionar respuesta detallada";
   }
 
-  async function llamadaExecutor(mensajeUsuario, plan) {
+  async function llamadaExecutor(mensajeUsuario, plan, signal) {
     // Truncate both the user message AND the plan to stay within context window
     const inputTruncado = truncarParaRazonamiento(mensajeUsuario, MAX_INPUT_CHARS_EXECUTOR);
     const planTruncado = plan.slice(0, 3000);
@@ -757,12 +829,13 @@ Sintetiza la mejor respuesta definitiva ahora:`;
       body: JSON.stringify({
         model: EXECUTOR_MODEL,  // versatile model — handles large docs without TPM cap issues
         messages: [
-          { role: "system", content: "Eres un ejecutor experto. Sigue estrictamente el plan proporcionado paso a paso. Razona en voz alta antes de cada paso (chain of thought). Genera la mejor respuesta posible en español." },
+          { role: "system", content: "Eres un ejecutor experto. Sigue estrictamente el plan proporcionado paso a paso. Razona en voz alta antes de cada paso (chain of thought). REGLA ABSOLUTA: DEBES RESPONDER SIEMPRE Y EXCLUSIVAMENTE EN ESPAÑOL." },
           { role: "user", content: inputTruncado + "\n\nPLAN A SEGUIR:\n" + planTruncado }
         ],
         max_tokens: 4096,
         temperature: 0.4
-      })
+      }),
+      signal
     });
 
     if (!response.ok) {
@@ -775,7 +848,7 @@ Sintetiza la mejor respuesta definitiva ahora:`;
     return data.choices?.[0]?.message?.content || "";
   }
 
-  async function llamadaReviewer(respuesta, preguntaOriginal) {
+  async function llamadaReviewer(respuesta, preguntaOriginal, signal) {
     const preguntaTruncada = truncarParaRazonamiento(preguntaOriginal, MAX_INPUT_CHARS_REVIEWER);
     const respuestaTruncada = truncarParaRazonamiento(respuesta, MAX_INPUT_CHARS_REVIEWER);
     const response = await fetchConReintentos("https://api.groq.com/openai/v1/chat/completions", {
@@ -787,13 +860,14 @@ Sintetiza la mejor respuesta definitiva ahora:`;
       body: JSON.stringify({
         model: REVIEWER_MODEL,  // Fast model — high rate limit quota
         messages: [
-          { role: "system", content: "Eres un revisor experto. El texto a revisar es la salida en bruto de un asistente que razonó paso a paso. Tu tarea es extraer ÚNICAMENTE la respuesta final útil para el usuario, eliminando todo el proceso de pensamiento o menciones a 'pasos'. Corrige cualquier error y devuelve SOLO la respuesta final directa, concisa y natural en español. NO agregues metacomentarios." },
+          { role: "system", content: "Eres un revisor experto. El texto a revisar es la salida en bruto de un asistente que razonó paso a paso. Tu tarea es extraer ÚNICAMENTE la respuesta final útil para el usuario, eliminando todo el proceso de pensamiento o menciones a 'pasos'. Corrige cualquier error y devuelve SOLO la respuesta final directa, concisa y natural. REGLA INQUEBRANTABLE: TU RESPUESTA DEBE ESTAR 100% EN ESPAÑOL. NO agregues metacomentarios ni palabras en inglés." },
           { role: "user", content: `PREGUNTA ORIGINAL:\n${preguntaTruncada}\n\nRESPUESTA EN BRUTO A REVISAR:\n${respuestaTruncada}\n\nExtrae y mejora solo la respuesta final.` }
         ],
         max_tokens: 4096,
-        temperature: 0.3, 
-        presence_penalty: 0.1 
-      })
+        temperature: 0.3,
+        presence_penalty: 0.1
+      }),
+      signal
     });
 
     if (!response.ok) {
@@ -803,13 +877,13 @@ Sintetiza la mejor respuesta definitiva ahora:`;
     }
     const data = await response.json();
     const revision = data.choices?.[0]?.message?.content || respuesta;
-    
+
     // Fallback if the model hallucinates garbage symbols due to Unicode/context issues
     if (revision.includes("__") || revision.trim() === "") {
       console.warn("⚠️ Reviewer generated garbage tokens. Falling back to Executor response.");
       return respuesta;
     }
-    
+
     return revision;
   }
 
@@ -950,14 +1024,14 @@ Sintetiza la mejor respuesta definitiva ahora:`;
         send({ type: "error", mensaje: "Créditos insuficientes. Por favor, actualizá tu plan para continuar.", conversationId, code: "OUT_OF_CREDITS" });
         return;
       }
-      
+
       // Validar tamaño del archivo de audio (max 25MB)
       const MAX_AUDIO_SIZE = 25 * 1024 * 1024;
       if (data.length > MAX_AUDIO_SIZE) {
         send({ type: "error", mensaje: "El archivo de audio es demasiado grande (máximo 25MB).", conversationId });
         return;
       }
-      
+
       iniciarProcesamiento(conversationId);
       const tmpFile = path.join(__dirname, `tmp_${crypto.randomUUID()}.webm`);
       try {
@@ -1072,11 +1146,34 @@ Sintetiza la mejor respuesta definitiva ahora:`;
             }
 
             let historial = obtenerHistorial(conversationId);
-            
+
             // Reconstruir el historial si el servidor lo perdió (ej: por reinicio o reconexión)
             if (msg.historialPrevio && Array.isArray(msg.historialPrevio)) {
               if (msg.historialPrevio.length > historial.length) {
                 historial = msg.historialPrevio;
+
+                // Reinyectar archivos adjuntos desde el caché del servidor si es necesario
+                for (const mensaje of historial) {
+                  if (mensaje.role === "user" && mensaje.adjuntos && Array.isArray(mensaje.adjuntos) && mensaje.adjuntos.length > 0) {
+                    if (!String(mensaje.content || "").includes("[Archivos adjuntos:]")) {
+                      const bloquesCached = [];
+                      for (const adj of mensaje.adjuntos) {
+                        const size = adj.size || adj.length || 0;
+                        const cachedText = obtenerTextoDeCache(adj.nombre, size);
+                        if (cachedText) {
+                          bloquesCached.push(cachedText);
+                        }
+                      }
+                      if (bloquesCached.length > 0) {
+                        mensaje.content = String(mensaje.content || "") + `\n\n[Archivos adjuntos:]\n\n${bloquesCached.join('\n\n')}`;
+                      }
+                    }
+                  }
+                }
+
+                if (historial.length === 0 || historial[0].role !== "system") {
+                  historial.unshift({ role: "system", content: "" });
+                }
               }
             }
 

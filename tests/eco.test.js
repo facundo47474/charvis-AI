@@ -99,26 +99,32 @@ describe("esEco()", () => {
   });
 
   it("false si las palabras de 1 char NO forman substring en la respuesta", () => {
-    // La guarda de substring se evalúa ANTES del filtro de palabras cortas.
-    // "x y z" no es substring de "alpha beta gamma" → palabras filtradas = 0 → false.
     assert.equal(esEco("x y z", "alpha beta gamma delta"), false);
   });
 
-  it("true cuando las palabras de 1 char forman un substring (comportamiento documentado)", () => {
-    // "a b c" (5 chars) IS substring de "a b c d e f g" → la función retorna true
-    // por la regla de substring, antes de llegar al filtro de longitud de palabras.
-    // Este test documenta el comportamiento real para evitar regresiones.
-    assert.equal(esEco("a b c", "a b c d e f g"), true);
+  it("false para palabras de un char aunque formen substring (longitud menor al umbral)", () => {
+    // "a b c" tiene longitud corta y no debe ser tratado como eco
+    assert.equal(esEco("a b c", "a b c d e f g"), false);
   });
 
-  // ── Casos que deben retornar true ───────────────────────
+  // ── Casos que deben retornar true/false corregidos ────────
 
-  it("true si la transcripción (≥ 3 chars) está contenida como substring en la respuesta", () => {
-    assert.equal(esEco("hola", "hola cómo estás"), true);
+  it("false para palabras monosílabas o respuestas muy cortas (evita falsos positivos)", () => {
+    assert.equal(esEco("hola", "hola cómo estás"), false);
+    assert.equal(esEco("pan", "me gusta el pan fresco"), false);
+    assert.equal(esEco("sí", "sí, por favor decime qué necesitás"), false);
   });
 
-  it("true si todas las palabras (≤ 5) de la transcripción aparecen en la respuesta", () => {
-    assert.equal(esEco("hola mundo", "hola buen mundo amigo"), true);
+  it("true si la transcripción larga es substring exacto", () => {
+    assert.equal(esEco("hola como estas amigo mio", "hola como estas amigo mio espero que te encuentres bien"), true);
+  });
+
+  it("false si todas las palabras coinciden pero la frase es muy corta (ej: hola mundo)", () => {
+    assert.equal(esEco("hola mundo", "hola buen mundo amigo"), false);
+  });
+
+  it("true si todas las palabras coinciden y tiene longitud prudente (ej: hola mundo maravilloso)", () => {
+    assert.equal(esEco("hola mundo maravilloso", "hola buen mundo maravilloso amigo"), true);
   });
 
   it("true con exactamente 5 palabras que coinciden todas", () => {
@@ -128,42 +134,37 @@ describe("esEco()", () => {
     );
   });
 
-  it("true si ≥ 52% de palabras (> 5) coinciden en la respuesta", () => {
-    // 4 de 6 = 66.7 % → eco
+  it("true si ≥ 75% de palabras (> 5) coinciden en la respuesta", () => {
+    // 5 de 6 = 83.3 % → eco
     assert.equal(
-      esEco("uno dos tres cuatro cinco seis", "uno dos tres cuatro siete ocho"),
+      esEco("uno dos tres cuatro cinco seis", "uno dos tres cuatro cinco siete"),
       true
     );
   });
 
-  it("true con exactamente 52% de coincidencias en transcripción larga (> 5 palabras)", () => {
-    // 4 de 7 ≈ 57 % → eco (> 0.52)
+  it("false si < 75% de palabras coinciden en la respuesta", () => {
+    // 4 de 6 = 66.7 % → no eco (antes daba true en el código con 52%)
     assert.equal(
-      esEco("aa bb cc dd ee ff gg", "aa bb cc dd xx yy zz"),
-      true
+      esEco("uno dos tres cuatro cinco seis", "uno dos tres cuatro siete ocho"),
+      false
     );
   });
 
   it("es insensible a mayúsculas", () => {
-    assert.equal(esEco("HOLA MUNDO", "hola buen mundo amigo"), true);
+    assert.equal(esEco("HOLA MUNDO INTERESANTE", "hola buen mundo interesante amigo"), true);
   });
 
   it("es insensible a tildes y acentos", () => {
-    assert.equal(esEco("Héroe", "el heroe valiente lucho"), true);
+    assert.equal(esEco("heroe valiente y audaz", "el heroe valiente y audaz lucho"), true);
   });
 
   it("es insensible a signos de puntuación", () => {
-    assert.equal(esEco("¡hola!", "hola cómo estás"), true);
+    assert.equal(esEco("¡hola mundo esperado!", "hola buen mundo esperado amigo"), true);
   });
 
   // ── Límites exactos ────────────────────────────────────
 
   it("transcripción de exactamente 2 caracteres pasa la guarda mínima", () => {
-    // "hi" tiene length 2 → pasa; pero "hi" NO está en "saludo de bienvenida"
     assert.equal(esEco("hi", "saludo de bienvenida"), false);
-  });
-
-  it("transcripción de exactamente 3 chars y está como substring → true", () => {
-    assert.equal(esEco("pan", "me gusta el pan fresco"), true);
   });
 });

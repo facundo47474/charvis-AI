@@ -10,12 +10,14 @@
 const path = require("path");
 
 const MAX_FILE_BYTES     = 12 * 1024 * 1024;
-const MAX_EXTRACTED_CHARS = 60_000;
+const MAX_EXTRACTED_CHARS = 24_000;
 
 // ─── Modo ────────────────────────────────────────────────────────────────────
 
 function modoValido(modo) {
-  return modo === "razonamiento" ? "razonamiento" : "normal";
+  if (modo === "razonamiento") return "razonamiento";
+  if (modo === "pro") return "pro";
+  return "normal";
 }
 
 // ─── Archivos ─────────────────────────────────────────────────────────────────
@@ -48,14 +50,14 @@ function bufferDesdeContenido(contenido) {
   return Buffer.from(texto, "utf8");
 }
 
-function recortarTextoExtraido(texto) {
+function recortarTextoExtraido(texto, limite = MAX_EXTRACTED_CHARS) {
   const limpio = String(texto || "")
     .replace(/\u0000/g, "")
     .replace(/[ \t]+\n/g, "\n")
     .trim();
-  if (limpio.length <= MAX_EXTRACTED_CHARS) return limpio;
+  if (limpio.length <= limite) return limpio;
   return (
-    limpio.slice(0, MAX_EXTRACTED_CHARS) +
+    limpio.slice(0, limite) +
     "\n\n[Texto recortado por seguridad: el archivo es mas largo.]"
   );
 }

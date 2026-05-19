@@ -34,6 +34,10 @@ describe("modoValido()", () => {
     assert.equal(modoValido("razonamiento"), "razonamiento");
   });
 
+  it("retorna 'pro' para el string exacto", () => {
+    assert.equal(modoValido("pro"), "pro");
+  });
+
   it("retorna 'normal' para cualquier otro valor", () => {
     assert.equal(modoValido("normal"), "normal");
     assert.equal(modoValido("RAZONAMIENTO"), "normal");

@@ -9,6 +9,7 @@ let audioActivo = true;
 let grabando = false;
 let mediaRecorder = null;
 let audioChunks = [];
+let totalUsageGlobal = -1;
 
 // Auth state
 let authToken = localStorage.getItem("charvis_token");
@@ -169,9 +170,8 @@ function alCompletarLogin(user) {
 
   cargarConversaciones();
   iniciarConversaciones();
-  if (!user.isGuest) {
-    conectarWebSocket();
-  } else {
+  conectarWebSocket();
+  if (user.isGuest) {
     mostrarAvisoTemporal("Modo invitado: Algunas funciones están limitadas.");
   }
   renderizarConversacion(obtenerConversacionActiva());
@@ -204,6 +204,8 @@ function conectarWebSocket() {
   let urlStr = `${protocol}//${location.host}`;
   if (authToken) {
     urlStr += `?token=${authToken}`;
+  } else if (currentUser && currentUser.isGuest) {
+    urlStr += `?token=guest`;
   }
 
   try {
@@ -276,26 +278,47 @@ function manejarMensajeServidor(data) {
     return;
   }
 
-  if (msg.type === "mensaje" || msg.type === "respuesta") {
+  if (msg.type === "mensaje" || msg.type === "respuesta" || msg.type === "streamTerminado") {
     setGeneratingState(false);
     if (currentAssistantMessageId) {
       const messageEl = document.getElementById(currentAssistantMessageId);
       if (messageEl) {
         const textEl = messageEl.querySelector(".msg-text");
-        const finalTexto = msg.texto || msg.content || "";
+
+        let finalTexto = msg.texto || msg.content;
+        if (finalTexto === undefined || finalTexto === null) {
+          finalTexto = textEl.getAttribute("data-raw") || "";
+        }
+
         textEl.setAttribute("data-raw", finalTexto);
         textEl.innerHTML = markdownToHtml(finalTexto);
+
+        // Guardar el mensaje final del asistente en memoria
+        guardarMensajeEnConversacion({
+          tipo: "mensaje",
+          rol: "charvis",
+          texto: finalTexto
+        });
+
         currentAssistantMessageId = null;
         return;
       }
     }
     const rol = normalizarRol(msg.rol || "charvis");
-    agregarMensaje(rol, msg.texto || msg.content || "");
+    const texto = msg.texto || msg.content || "";
+    agregarMensaje(rol, texto);
+
+    guardarMensajeEnConversacion({
+      tipo: "mensaje",
+      rol: rol,
+      texto: texto
+    });
     return;
   }
 
   if (msg.type === "error") {
     setGeneratingState(false);
+    ocultarTypingIndicator();
     agregarError(msg.texto || msg.mensaje || "Ocurrió un error.");
     return;
   }
@@ -306,7 +329,13 @@ function manejarMensajeServidor(data) {
   }
 
   if (msg.type === "estado") {
-    mostrarEstadoTemporal(msg.valor || "pensando");
+    // Fase 3.3 — Mostrar typing indicator en estados de "pensando"
+    const estadosPensando = ["pensando", "razonando", "entendiendo_problema", "creando_plan", "ejecutando_plan", "verificando_respuesta", "pensando_multi_modelo", "sintetizando"];
+    if (estadosPensando.includes(msg.valor)) {
+      mostrarTypingIndicator();
+    } else if (msg.valor === "escribiendo") {
+      ocultarTypingIndicator();
+    }
     if (msg.valor === "escribiendo" || msg.valor === "razonando") {
       setGeneratingState(true);
     }
@@ -336,12 +365,16 @@ function manejarMensajeServidor(data) {
 
   if (msg.type === "streamTerminado") {
     setGeneratingState(false);
+    ocultarTypingIndicator();
     currentAssistantMessageId = null;
     return;
   }
 }
 
 function manejarDeltaStreaming(texto) {
+  // Quitar typing indicator cuando llega el primer delta
+  ocultarTypingIndicator();
+
   if (!currentAssistantMessageId) {
     agregarMensaje("charvis", "", [], true);
   }
@@ -361,6 +394,52 @@ function manejarDeltaStreaming(texto) {
   // Auto scroll
   const chat = document.getElementById("chat");
   chat.scrollTop = chat.scrollHeight;
+}
+
+/* --- Fase 3.3: Typing Indicator --- */
+function mostrarTypingIndicator() {
+  const chat = document.getElementById("chat");
+  if (!chat) return;
+
+  ocultarTypingIndicator(); // Evitar duplicados
+
+  const wrapper = document.createElement("div");
+  wrapper.id = "charvis-typing-indicator";
+  wrapper.className = "message charvis";
+  wrapper.style.cssText = "animation: msgFadeUp 0.3s ease both;";
+
+  // Avatar
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar";
+  avatar.innerHTML = '<img src="/assets/istockphoto-1366401566-1024x1024.jpg" class="charvis-logo" alt="Charvis">';
+  wrapper.appendChild(avatar);
+
+  // Typing bubble
+  const content = document.createElement("div");
+  content.className = "msg-content";
+  content.innerHTML = `
+    <div class="typing-indicator">
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+    </div>`;
+  wrapper.appendChild(content);
+
+  chat.appendChild(wrapper);
+  requestAnimationFrame(() => {
+    wrapper.scrollIntoView({ behavior: "smooth", block: "end" });
+  });
+}
+
+function ocultarTypingIndicator() {
+  const els = document.querySelectorAll("#charvis-typing-indicator");
+  els.forEach(el => {
+    el.removeAttribute("id");
+    el.style.opacity = "0";
+    el.style.transform = "translateY(4px)";
+    el.style.transition = "opacity 0.2s ease, transform 0.2s ease";
+    setTimeout(() => el.remove(), 220);
+  });
 }
 
 function setGeneratingState(generating) {
@@ -518,6 +597,25 @@ function guardarMensajeEnConversacion(mensaje) {
 
   conversacion.mensajes.push(mensajeGuardar);
 
+  // LÍMITE DE MEMORIA: Conservar solo los últimos 40 mensajes para no saturar ni la memoria ni los tokens
+  const MAX_MENSAJES = 40;
+  if (conversacion.mensajes.length > MAX_MENSAJES) {
+    conversacion.mensajes.splice(0, conversacion.mensajes.length - MAX_MENSAJES);
+  }
+
+  if (
+    mensajeGuardar.tipo === "mensaje" &&
+    esRolUsuario(mensajeGuardar.rol)
+  ) {
+    if (totalUsageGlobal === -1) {
+      totalUsageGlobal = 0;
+      conversaciones.forEach(c => {
+        totalUsageGlobal += c.mensajes.filter(m => esRolUsuario(m.rol)).length;
+      });
+    }
+    totalUsageGlobal++;
+  }
+
   if (
     mensajeGuardar.tipo === "mensaje" &&
     esRolUsuario(mensajeGuardar.rol) &&
@@ -579,6 +677,37 @@ function actualizarSidebarConversaciones() {
     row.appendChild(del);
     sidebarHistory.appendChild(row);
   });
+
+  actualizarLimitesUso();
+}
+
+function actualizarLimitesUso() {
+  const maxLimit = 300;
+
+  if (totalUsageGlobal === -1) {
+    totalUsageGlobal = 0;
+    conversaciones.forEach(c => {
+      totalUsageGlobal += c.mensajes.filter(m => esRolUsuario(m.rol)).length;
+    });
+  }
+
+  const barFill = document.getElementById("usage-bar-fill");
+  const countText = document.getElementById("usage-count-text");
+
+  if (!barFill || !countText) return;
+
+  const percentage = Math.min((totalUsageGlobal / maxLimit) * 100, 100);
+
+  countText.textContent = `${totalUsageGlobal} / ${maxLimit}`;
+
+  setTimeout(() => {
+    barFill.style.width = `${percentage}%`;
+    if (percentage > 90) {
+      barFill.style.background = "linear-gradient(90deg, #ff7a3d 0%, #ff3333 100%)";
+    } else {
+      barFill.style.background = "linear-gradient(90deg, #2ee6a6 0%, #ff7a3d 50%, #cf5fff 100%)";
+    }
+  }, 100);
 }
 
 function renderizarConversacion(conversacion) {
@@ -623,7 +752,8 @@ function guardarConversaciones() {
   const data = {
     conversationCount,
     activeConversationId,
-    conversaciones
+    conversaciones,
+    totalUsage: totalUsageGlobal
   };
 
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -640,10 +770,21 @@ function cargarConversaciones() {
     conversationCount = Number(data.conversationCount || 0);
     activeConversationId = data.activeConversationId || null;
     conversaciones = Array.isArray(data.conversaciones) ? data.conversaciones : [];
+
+    totalUsageGlobal = data.totalUsage !== undefined ? Number(data.totalUsage) : -1;
+
+    if (totalUsageGlobal === -1) {
+      totalUsageGlobal = 0;
+      conversaciones.forEach(c => {
+        totalUsageGlobal += c.mensajes.filter(m => esRolUsuario(m.rol)).length;
+      });
+      guardarConversaciones();
+    }
   } catch {
     conversationCount = 0;
     activeConversationId = null;
     conversaciones = [];
+    totalUsageGlobal = 0;
   }
 }
 
@@ -913,8 +1054,17 @@ function enviarTextoCharvis(texto) {
 
   cerrarTodasLasVentanas();
 
-  // Agregar mensaje del usuario con archivos adjuntos
+  // Agregar mensaje del usuario con archivos adjuntos al DOM
   agregarMensaje("usuario", texto || "Analiza los archivos adjuntos", archivosAdjuntos);
+
+  // GUARDAR en memoria local
+  guardarMensajeEnConversacion({
+    tipo: "mensaje",
+    rol: "usuario",
+    texto: texto || "Analiza los archivos adjuntos",
+    adjuntos: archivosAdjuntos
+  });
+
   limpiarInputs();
 
   // Enviar al servidor con adjuntos
@@ -937,9 +1087,10 @@ function enviarAlServidor(texto, adjuntos = []) {
   const conversacionActiva = obtenerConversacionActiva();
   const historialPrevio = conversacionActiva ? conversacionActiva.mensajes.map(m => ({
     role: m.rol === "usuario" ? "user" : "assistant",
-    content: m.texto
+    content: m.texto,
+    adjuntos: m.adjuntos || []
   })) : [];
-  
+
   // Como agregarMensaje() ya insertó el texto actual del usuario en app.js,
   // lo removemos del final para que el servidor lo procese correctamente con los adjuntos
   if (historialPrevio.length > 0 && historialPrevio[historialPrevio.length - 1].role === "user") {
@@ -951,7 +1102,7 @@ function enviarAlServidor(texto, adjuntos = []) {
     texto,
     mensaje: texto,
     conversationId: activeConversationId,
-    modo: modoRazonamientoActivo ? "razonamiento" : "normal",
+    modo: currentMode,
     contexto: activeContext,
     adjuntos: adjuntos,
     historialPrevio: historialPrevio,
@@ -1106,10 +1257,14 @@ function setMode(mode) {
 
 function sincronizarBotonesModo() {
   let label = "✨ Normal ▾";
+  let activeText = "Modo normal";
+
   if (currentMode === "razonamiento") {
     label = "🧠 Razonamiento ▾";
+    activeText = "Modo razonamiento";
   } else if (currentMode === "pro") {
     label = "🚀 Charvis Pro ▾";
+    activeText = "Modo pro";
   }
 
   const modeButton = document.getElementById("mode-button");
@@ -1215,6 +1370,24 @@ function agregarMensaje(rol, texto, adjuntos = [], isStreaming = false) {
   message.id = msgId;
   if (isStreaming) message.classList.add("streaming");
 
+  // Avatar
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar";
+  if (rolNorm === "charvis") {
+    avatar.innerHTML = '<img src="/assets/istockphoto-1366401566-1024x1024.jpg" class="charvis-logo" alt="Charvis">';
+  } else {
+    if (currentUser && currentUser.picture) {
+      avatar.innerHTML = `<img src="${currentUser.picture}" class="charvis-logo" alt="User Avatar" referrerpolicy="no-referrer">`;
+    } else {
+      avatar.innerHTML = currentUser && currentUser.name ? currentUser.name.charAt(0).toUpperCase() : "U";
+    }
+  }
+  message.appendChild(avatar);
+
+  // Content wrapper
+  const contentWrapper = document.createElement("div");
+  contentWrapper.className = "msg-content";
+
   const text = document.createElement("div");
   text.className = "msg-text";
   text.setAttribute("data-raw", texto || "");
@@ -1225,8 +1398,14 @@ function agregarMensaje(rol, texto, adjuntos = [], isStreaming = false) {
     text.textContent = texto || "";
   }
 
-  message.appendChild(text);
+  contentWrapper.appendChild(text);
 
+  // Fase 3.4 — Timestamp sutil bajo cada mensaje
+  const meta = document.createElement("div");
+  meta.className = "msg-meta";
+  const now = new Date();
+  meta.textContent = now.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+  contentWrapper.appendChild(meta);
 
   // Agregar previews de archivos adjuntos
   if (adjuntos && adjuntos.length > 0) {
@@ -1264,12 +1443,17 @@ function agregarMensaje(rol, texto, adjuntos = [], isStreaming = false) {
       attachmentsDiv.appendChild(attachment);
     });
 
-    message.appendChild(attachmentsDiv);
+    contentWrapper.appendChild(attachmentsDiv);
   }
+
+  message.appendChild(contentWrapper);
 
   chat.appendChild(message);
 
-  chat.scrollTop = chat.scrollHeight;
+  // Fase 6.2 — Scroll suave al último mensaje
+  requestAnimationFrame(() => {
+    message.scrollIntoView({ behavior: "smooth", block: "end" });
+  });
 
   guardarMensajeEnConversacion({
     tipo: "mensaje",
@@ -1289,6 +1473,16 @@ function agregarError(texto) {
   const message = document.createElement("div");
   message.className = "message error";
 
+  // Avatar
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar";
+  avatar.innerHTML = "⚠️";
+  message.appendChild(avatar);
+
+  // Content wrapper
+  const contentWrapper = document.createElement("div");
+  contentWrapper.className = "msg-content";
+
   const text = document.createElement("div");
   text.className = "msg-text";
   text.textContent = texto || "Ocurrió un error.";
@@ -1298,8 +1492,9 @@ function agregarError(texto) {
   retryBtn.innerHTML = "<span>↻</span> Reintentar";
   retryBtn.onclick = retryLastMessage;
 
-  message.appendChild(text);
-  message.appendChild(retryBtn);
+  contentWrapper.appendChild(text);
+  contentWrapper.appendChild(retryBtn);
+  message.appendChild(contentWrapper);
   chat.appendChild(message);
 
   chat.scrollTop = chat.scrollHeight;
@@ -1379,6 +1574,7 @@ function abrirSidebar() {
 
   if (sidebar) {
     sidebar.classList.add("open");
+    sidebar.classList.remove("closed");
   }
 
   if (backdrop && esMobile()) {
@@ -1396,6 +1592,7 @@ function cerrarSidebar() {
 
   if (sidebar) {
     sidebar.classList.remove("open");
+    sidebar.classList.add("closed");
   }
 
   if (backdrop) {
@@ -1410,10 +1607,19 @@ function toggleSidebar() {
 
   if (!sidebar) return;
 
-  if (sidebar.classList.contains("open")) {
-    cerrarSidebar();
+  if (esMobile()) {
+    if (sidebar.classList.contains("open")) {
+      cerrarSidebar();
+    } else {
+      abrirSidebar();
+    }
   } else {
-    abrirSidebar();
+    // Desktop: toggle "closed" class
+    if (sidebar.classList.contains("closed")) {
+      abrirSidebar();
+    } else {
+      cerrarSidebar();
+    }
   }
 }
 
@@ -1600,30 +1806,23 @@ function actualizarBotonesVoz(rec) {
 function markdownToHtml(text) {
   if (!text) return "";
 
-  // Sanitización básica para prevenir XSS
-  const escapeHtml = (str) => {
-    return str
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  };
-
   let html = text
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/```([\s\S]*?)```/g, function (_, code) { return "<pre><code>" + escapeHtml(code.trim()) + "</code></pre>"; })
-    .replace(/:::think\n([\s\S]*?)\n:::/g, function (_, content) { return "<details class=\"charvis-thought-process\"><summary>🧠 Proceso de Razonamiento (Charvis AI)</summary><div class=\"thought-content\">" + escapeHtml(content.trim()) + "</div></details>"; })
-    .replace(/`([^`]+)`/g, function (_, code) { return "<code>" + escapeHtml(code) + "</code>"; })
-    .replace(/\*\*([^*]+)\*\*/g, function (_, text) { return "<strong>" + escapeHtml(text) + "</strong>"; })
-    .replace(/\*([^*]+)\*/g, function (_, text) { return "<em>" + escapeHtml(text) + "</em>"; })
-    .replace(/^#{3} (.+)$/gm, function (_, text) { return "<h3>" + escapeHtml(text) + "</h3>"; })
-    .replace(/^#{2} (.+)$/gm, function (_, text) { return "<h2>" + escapeHtml(text) + "</h2>"; })
-    .replace(/^#{1} (.+)$/gm, function (_, text) { return "<h1>" + escapeHtml(text) + "</h1>"; })
-    .replace(/^[-*] (.+)$/gm, function (_, text) { return "<li>" + escapeHtml(text) + "</li>"; })
+    .replace(/```(?:[a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g, function (_, code) {
+      return '<div class="code-container"><button type="button" class="copy-code-btn" onclick="copyCode(this)">Copiar</button><pre><code>' + code.trim() + '</code></pre></div>';
+    })
+    .replace(/(?::::think\n|&lt;think&gt;\n?)([\s\S]*?)\n?(?::::|&lt;\/think&gt;)/g, function (_, content) { return "<details class=\"charvis-thought-process\"><summary>🧠 Proceso de Razonamiento (Charvis AI)</summary><div class=\"thought-content\">" + content.trim() + "</div></details>"; })
+    .replace(/`([^`]+)`/g, function (_, code) { return "<code>" + code + "</code>"; })
+    .replace(/\*\*([\s\S]+?)\*\*/g, function (_, text) { return "<strong>" + text + "</strong>"; })
+    .replace(/\*([^*]+)\*/g, function (_, text) { return "<em>" + text + "</em>"; })
+    .replace(/^#{3} (.+)$/gm, function (_, text) { return "<h3>" + text.trim() + "</h3>"; })
+    .replace(/^#{2} (.+)$/gm, function (_, text) { return "<h2>" + text.trim() + "</h2>"; })
+    .replace(/^#{1} (.+)$/gm, function (_, text) { return "<h1>" + text.trim() + "</h1>"; })
+    .replace(/^[-*] (.+)$/gm, function (_, text) { return "<li>" + text.trim() + "</li>"; })
     .replace(/(<li>.*<\/li>)/gs, "<ul>$1</ul>")
     .replace(/\n{2,}/g, "</p><p>")
-    .replace(/\n/g, "<br>");
+    .replace(/\n/g, "<br>")
+    .replace(/&lt;(\/?(?:strong|b|em|i|br|p|ul|li|h[1-6]))\s*&gt;/gi, "<$1>");
   if (!html.startsWith("<")) html = "<p>" + html + "</p>";
   return html;
 }
@@ -1766,3 +1965,36 @@ function initAmbientCanvas() {
 const stylePatch = document.createElement('style');
 stylePatch.textContent = '.tool-btn, #reasoning-toggle, #hero-reasoning-toggle { display: none !important; }';
 document.head.appendChild(stylePatch);
+
+window.copyCode = function (btn) {
+  const preEl = btn.nextElementSibling;
+  if (!preEl) return;
+  const text = preEl.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = "¡Copiado!";
+    btn.classList.add("copied");
+    setTimeout(() => {
+      btn.textContent = "Copiar";
+      btn.classList.remove("copied");
+    }, 2000);
+  }).catch(err => {
+    console.error("Error al copiar: ", err);
+  });
+};
+
+/* ========================= */
+/* FASE 4.1 — TOPBAR BLUR AL SCROLLEAR */
+/* ========================= */
+(function initTopbarScroll() {
+  const chat = document.getElementById("chat");
+  const topbar = document.getElementById("topbar");
+  if (!chat || !topbar) return;
+
+  chat.addEventListener("scroll", () => {
+    if (chat.scrollTop > 10) {
+      topbar.classList.add("scrolled");
+    } else {
+      topbar.classList.remove("scrolled");
+    }
+  }, { passive: true });
+})();

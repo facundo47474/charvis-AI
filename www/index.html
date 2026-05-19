@@ -25,11 +25,7 @@
     <div class="login-left">
       <div class="login-content">
         <div class="login-brand">
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" role="img"
-            aria-label="Logo de Charvis AI">
-            <rect width="40" height="40" rx="12" fill="#EAE0D5" />
-            <path d="M20 12L22.25 17.75L28 20L22.25 22.25L20 28L17.75 22.25L12 20L17.75 17.75L20 12Z" fill="#1E1E1E" />
-          </svg>
+          <img src="/assets/istockphoto-1366401566-1024x1024.jpg" alt="Logo de Charvis AI" style="width: 60px; height: 60px; border-radius: 12px; object-fit: cover; margin-bottom: 20px;">
           <h1>Bienvenido a Charvis</h1>
           <p class="login-subtitle">Inteligencia Artificial avanzada diseñada para razonamiento profundo, análisis de
             archivos y multimodalidad.</p>
@@ -63,6 +59,11 @@
 
   <div class="app" id="app" style="display:none;">
 
+    <!-- FASE 1.1: Orbes ambientales animados -->
+    <div class="ambient-orb ambient-orb-1" aria-hidden="true"></div>
+    <div class="ambient-orb ambient-orb-2" aria-hidden="true"></div>
+    <div class="ambient-orb ambient-orb-3" aria-hidden="true"></div>
+
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar">
 
@@ -76,6 +77,17 @@
       <div class="sidebar-content">
         <p class="sidebar-title">Conversaciones</p>
         <div id="sidebar-history" class="sidebar-history-wrapper"></div>
+      </div>
+
+      <div class="usage-section">
+        <div class="usage-header">
+          <span class="usage-title">⚡ Límites de Uso</span>
+          <span class="usage-count" id="usage-count-text">Calculando...</span>
+        </div>
+        <div class="usage-bar-bg">
+          <div class="usage-bar-fill" id="usage-bar-fill" style="width: 0%;"></div>
+        </div>
+        <p class="usage-desc">Uso extenso. Se reinicia cada 24h.</p>
       </div>
 
       <div class="sidebar-footer">
@@ -113,8 +125,8 @@
           </button>
 
           <div class="brand">
-            <div class="brand-icon">
-              ✦
+            <div class="brand-icon" style="overflow: hidden; padding: 0;">
+              <img src="/assets/istockphoto-1366401566-1024x1024.jpg" style="width: 100%; height: 100%; object-fit: cover;" alt="Charvis Logo">
             </div>
 
             <div class="brand-text">
