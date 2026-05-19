@@ -1,9 +1,13 @@
 // --- Cargar variables de entorno ---
-const envResult = require("dotenv").config();
-if (envResult.error) {
-  console.warn("⚠️  Advertencia: No se pudo cargar el archivo .env:", envResult.error.message);
-} else {
-  console.log("✅ Archivo .env cargado correctamente");
+// Solo cargar .env en desarrollo local. En producción (Render, Railway, etc.) las variables se
+// configuran directamente en el dashboard y no existe el archivo .env en disco.
+if (process.env.NODE_ENV !== "production") {
+  const envResult = require("dotenv").config();
+  if (envResult.error) {
+    console.warn("⚠️  .env no encontrado (normal en producción):", envResult.error.code);
+  } else {
+    console.log("✅ Archivo .env cargado correctamente");
+  }
 }
 
 const express = require("express");
@@ -1169,6 +1173,8 @@ Sintetiza la mejor respuesta definitiva ahora:`;
                       }
                     }
                   }
+                  // Eliminar la propiedad 'adjuntos' que no es parte del esquema de la API de Groq
+                  delete mensaje.adjuntos;
                 }
 
                 if (historial.length === 0 || historial[0].role !== "system") {

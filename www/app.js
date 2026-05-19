@@ -18,6 +18,7 @@ let STORAGE_KEY = "charvis_conversaciones_v2"; // Se actualizará al loguear
 let currentAudio = null;
 let currentAssistantMessageId = null; // Para streaming
 let isGenerating = false;
+let isStreamingActive = false; // Previene que el typing indicator reaparezca durante streaming
 const MAX_INPUT_CHARS = 12000;
 
 
@@ -278,8 +279,10 @@ function manejarMensajeServidor(data) {
     return;
   }
 
-  if (msg.type === "mensaje" || msg.type === "respuesta" || msg.type === "streamTerminado") {
+  if (msg.type === "mensaje" || msg.type === "respuesta") {
     setGeneratingState(false);
+    isStreamingActive = false;
+    ocultarTypingIndicator();
     if (currentAssistantMessageId) {
       const messageEl = document.getElementById(currentAssistantMessageId);
       if (messageEl) {
@@ -306,13 +309,14 @@ function manejarMensajeServidor(data) {
     }
     const rol = normalizarRol(msg.rol || "charvis");
     const texto = msg.texto || msg.content || "";
-    agregarMensaje(rol, texto);
-
-    guardarMensajeEnConversacion({
-      tipo: "mensaje",
-      rol: rol,
-      texto: texto
-    });
+    if (texto) {
+      agregarMensaje(rol, texto);
+      guardarMensajeEnConversacion({
+        tipo: "mensaje",
+        rol: rol,
+        texto: texto
+      });
+    }
     return;
   }
 
@@ -329,9 +333,9 @@ function manejarMensajeServidor(data) {
   }
 
   if (msg.type === "estado") {
-    // Fase 3.3 — Mostrar typing indicator en estados de "pensando"
     const estadosPensando = ["pensando", "razonando", "entendiendo_problema", "creando_plan", "ejecutando_plan", "verificando_respuesta", "pensando_multi_modelo", "sintetizando"];
-    if (estadosPensando.includes(msg.valor)) {
+    // Solo mostrar typing indicator si el streaming no ha comenzado aún
+    if (estadosPensando.includes(msg.valor) && !isStreamingActive) {
       mostrarTypingIndicator();
     } else if (msg.valor === "escribiendo") {
       ocultarTypingIndicator();
@@ -365,15 +369,34 @@ function manejarMensajeServidor(data) {
 
   if (msg.type === "streamTerminado") {
     setGeneratingState(false);
+    isStreamingActive = false;
     ocultarTypingIndicator();
-    currentAssistantMessageId = null;
+    // Finalizar el mensaje en streaming guardándolo en memoria
+    if (currentAssistantMessageId) {
+      const messageEl = document.getElementById(currentAssistantMessageId);
+      if (messageEl) {
+        const textEl = messageEl.querySelector(".msg-text");
+        const finalTexto = textEl ? (textEl.getAttribute("data-raw") || "") : "";
+        if (finalTexto) {
+          guardarMensajeEnConversacion({
+            tipo: "mensaje",
+            rol: "charvis",
+            texto: finalTexto
+          });
+        }
+      }
+      currentAssistantMessageId = null;
+    }
     return;
   }
 }
 
 function manejarDeltaStreaming(texto) {
-  // Quitar typing indicator cuando llega el primer delta
-  ocultarTypingIndicator();
+  // Marcar streaming activo y ocultar typing indicator al primer delta
+  if (!isStreamingActive) {
+    isStreamingActive = true;
+    ocultarTypingIndicator();
+  }
 
   if (!currentAssistantMessageId) {
     agregarMensaje("charvis", "", [], true);
