@@ -140,9 +140,16 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: Date.now() });
 });
 
+app.get("/api/ping", (_req, res) => {
+  res.status(200).send("pong");
+});
+
+const cookieParser = require("cookie-parser");
 const authController = require("./lib/controllers/auth.controller");
+const startKeepAlive = require("./lib/keepAlive");
 app.use("/api/auth", authController(sessions, { GOOGLE_CLIENT_ID, APP_PASSWORD, APP_USER }, { generarToken, verificarSesion }));
 
+startKeepAlive();
 
 async function analizarImagenConVision({ nombre, tipo, contenido }, pregunta) {
   const dataUrl = String(contenido || "").startsWith("data:")
@@ -1262,6 +1269,12 @@ setInterval(() => {
 // Limpieza de caché de disco al iniciar y cada hora
 limpiarCacheDisco();
 setInterval(limpiarCacheDisco, 60 * 60 * 1000);
+
+// Ruta rápida para auto-ping
+app.get('/api/ping', (req, res) => res.status(200).send('pong'));
+
+// Iniciar auto-ping para Render
+startKeepAlive();
 
 server.listen(PORT, "0.0.0.0", async () => {
   console.log(`\n🚀 CHARVIS ONLINE`);
