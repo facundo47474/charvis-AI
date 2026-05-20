@@ -12,6 +12,7 @@ if (process.env.NODE_ENV !== "production") {
 
 const express = require("express");
 const { WebSocketServer } = require("ws");
+const { Worker } = require("worker_threads");
 const http = require("http");
 const path = require("path");
 const fs = require("fs");
@@ -94,6 +95,7 @@ async function verificarClaveGroq() {
 
 const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY || "";
 const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "pNInz6obpgDQGcFmaJgB";
+const { elevenLabsTTS } = require("./lib/audio.service")({ ELEVENLABS_KEY, VOICE_ID });
 const PORT = process.env.PORT || 3000;
 const CHAT_MODEL = process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile";
 // gpt-oss-120b has an 8k TPM hard limit on free tier — only used for Swarm Judge (controlled input)
@@ -138,60 +140,8 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: Date.now() });
 });
 
-// --- Auth endpoints ---
-app.get("/api/auth/config", (_req, res) => {
-  res.json({
-    googleClientId: GOOGLE_CLIENT_ID || null,
-    hasPassword: !!APP_PASSWORD
-  });
-});
-
-app.post("/api/auth/google", async (req, res) => {
-  const { credential } = req.body;
-  if (!credential) return res.status(400).json({ error: "Sin credencial" });
-  if (!GOOGLE_CLIENT_ID) return res.status(400).json({ error: "Google OAuth no configurado" });
-  try {
-    const gRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
-    if (!gRes.ok) throw new Error("Token de Google inválido");
-    const payload = await gRes.json();
-    if (payload.aud !== GOOGLE_CLIENT_ID) throw new Error("Client ID no coincide");
-    const token = generarToken();
-    sessions.set(token, {
-      email: payload.email, name: payload.name, picture: payload.picture,
-      provider: "google", createdAt: Date.now()
-    });
-    res.json({ token, user: { email: payload.email, name: payload.name, picture: payload.picture } });
-  } catch (err) {
-    res.status(401).json({ error: err.message });
-  }
-});
-
-app.post("/api/auth/login", (req, res) => {
-  const { username, password } = req.body;
-  if (!APP_PASSWORD) return res.status(400).json({ error: "Login con contraseña no configurado" });
-  if (username === APP_USER && password === APP_PASSWORD) {
-    const token = generarToken();
-    sessions.set(token, {
-      email: null, name: username, picture: null,
-      provider: "password", createdAt: Date.now()
-    });
-    return res.json({ token, user: { name: username, picture: null } });
-  }
-  res.status(401).json({ error: "Usuario o contraseña incorrectos" });
-});
-
-app.get("/api/auth/me", (req, res) => {
-  const token = (req.headers.authorization || "").replace("Bearer ", "");
-  const session = verificarSesion(token);
-  if (!session) return res.status(401).json({ error: "No autenticado" });
-  res.json({ user: { name: session.name, email: session.email, picture: session.picture } });
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  const token = (req.headers.authorization || "").replace("Bearer ", "");
-  sessions.delete(token);
-  res.json({ ok: true });
-});
+const authController = require("./lib/controllers/auth.controller");
+app.use("/api/auth", authController(sessions, { GOOGLE_CLIENT_ID, APP_PASSWORD, APP_USER }, { generarToken, verificarSesion }));
 
 
 async function analizarImagenConVision({ nombre, tipo, contenido }, pregunta) {
@@ -237,21 +187,47 @@ async function analizarImagenConVision({ nombre, tipo, contenido }, pregunta) {
 }
 
 async function extraerTextoDocumento(buffer, tipo, ext) {
-  if (esPdf(tipo, ext)) {
-    const data = await pdfParse(buffer);
-    return data.text || "";
-  }
-
-  if (esDocx(tipo, ext)) {
-    const data = await mammoth.extractRawText({ buffer });
-    return data.value || "";
-  }
-
+  // Texto plano: operación ligera, se procesa en el hilo principal
   if (esTextoPlano(tipo, ext)) {
     return buffer.toString("utf8");
   }
 
-  throw new Error("Formato no soportado todavia. Usa imagenes, PDF, DOCX, TXT, Markdown, JSON, CSV o archivos de codigo.");
+  // PDF y DOCX: operaciones pesadas de CPU → Worker Thread para no bloquear el Event Loop
+  let method;
+  if (esPdf(tipo, ext)) method = "pdf";
+  else if (esDocx(tipo, ext)) method = "docx";
+  else throw new Error("Formato no soportado todavia. Usa imagenes, PDF, DOCX, TXT, Markdown, JSON, CSV o archivos de codigo.");
+
+  return new Promise((resolve, reject) => {
+    const ab = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    const worker = new Worker(path.join(__dirname, "lib", "fileWorker.js"), {
+      workerData: { method, bufferData: ab },
+      transferList: [ab]
+    });
+
+    const timeout = setTimeout(() => {
+      worker.terminate();
+      reject(new Error("Tiempo agotado procesando el archivo (>30s). Probá con un archivo más liviano."));
+    }, 30000);
+
+    worker.on("message", (msg) => {
+      clearTimeout(timeout);
+      if (msg.ok) resolve(msg.text);
+      else reject(new Error(msg.error || "Error interno procesando archivo."));
+    });
+
+    worker.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(new Error("Error en el worker de archivos: " + err.message));
+    });
+
+    worker.on("exit", (code) => {
+      if (code !== 0) {
+        clearTimeout(timeout);
+        reject(new Error(`Worker de archivos terminó inesperadamente (código ${code})`));
+      }
+    });
+  });
 }
 
 async function analizarArchivo(archivo, pregunta, modo = "normal") {
@@ -324,49 +300,54 @@ function prepararMensajes(historial, modo, selectedContext) {
   });
 }
 
-function elevenLabsTTS(text) {
-  return new Promise((resolve, reject) => {
-    if (!ELEVENLABS_KEY) { reject(new Error("Sin clave ElevenLabs")); return; }
-    const body = JSON.stringify({
-      text,
-      model_id: "eleven_multilingual_v2",
-      voice_settings: { stability: 0.50, similarity_boost: 0.85, style: 0.20, use_speaker_boost: true },
-      optimize_streaming_latency: 3  // 0-4, mayor = menor latencia
-    });
-    const options = {
-      hostname: "api.elevenlabs.io",
-      path: `/v1/text-to-speech/${VOICE_ID}/stream`,  // <-- /stream
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "xi-api-key": ELEVENLABS_KEY,
-        "Accept": "audio/mpeg"
-      }
-    };
-    const chunks = [];
-    const req = https.request(options, (res) => {
-      if (res.statusCode !== 200) {
-        let e = ""; res.on("data", d => e += d);
-        res.on("end", () => reject(new Error(`ElevenLabs ${res.statusCode}: ${e}`)));
-        return;
-      }
-      res.on("data", c => chunks.push(c));
-      res.on("end", () => resolve(Buffer.concat(chunks)));
-    });
-    req.on("error", reject);
-    req.write(body); req.end();
-  });
-}
+
 
 function crearHistorial() {
   return [{ role: "system", content: "" }];
 }
 
 const historialesGlobales = new Map();
+const historialesLastAccess = new Map();
 
 const cacheDir = path.join(__dirname, ".cache");
 if (!fs.existsSync(cacheDir)) {
   fs.mkdirSync(cacheDir, { recursive: true });
+}
+
+// --- Limpieza periódica de caché en disco ---
+const MAX_CACHE_AGE = 24 * 60 * 60 * 1000; // 24 horas
+const MAX_CACHE_SIZE = 100 * 1024 * 1024;  // 100 MB total
+
+function limpiarCacheDisco() {
+  try {
+    const files = fs.readdirSync(cacheDir);
+    const now = Date.now();
+    let totalSize = 0;
+    const fileStats = files.map(f => {
+      const filePath = path.join(cacheDir, f);
+      try {
+        const stat = fs.statSync(filePath);
+        totalSize += stat.size;
+        return { path: filePath, size: stat.size, mtime: stat.mtimeMs };
+      } catch { return null; }
+    }).filter(Boolean).sort((a, b) => a.mtime - b.mtime);
+
+    let eliminados = 0;
+    for (const file of fileStats) {
+      if (now - file.mtime > MAX_CACHE_AGE || totalSize > MAX_CACHE_SIZE) {
+        try {
+          fs.unlinkSync(file.path);
+          totalSize -= file.size;
+          eliminados++;
+        } catch {}
+      }
+    }
+    if (eliminados > 0) {
+      console.log(`🧹 Caché: ${eliminados} archivo(s) eliminados. Tamaño restante: ${Math.round(totalSize / 1024 / 1024)}MB`);
+    }
+  } catch (err) {
+    console.error("⚠️ Error limpiando caché de disco:", err.message);
+  }
 }
 
 function guardarTextoEnCache(nombre, size, texto) {
@@ -411,6 +392,19 @@ wss.on("connection", (ws, req) => {
   const procesandoPorConversacion = new Set();
   let conversationIdActivo = "default";
 
+  // --- Rate Limiter por conexión WebSocket ---
+  const RATE_LIMIT_WINDOW = 10000; // 10 segundos
+  const RATE_LIMIT_MAX = 8;        // máx 8 mensajes por ventana
+  let msgTimestamps = [];
+
+  function checkRateLimit() {
+    const now = Date.now();
+    msgTimestamps = msgTimestamps.filter(t => now - t < RATE_LIMIT_WINDOW);
+    if (msgTimestamps.length >= RATE_LIMIT_MAX) return false;
+    msgTimestamps.push(now);
+    return true;
+  }
+
   function obtenerUserInfo() {
     return {
       userId: session ? (session.email || session.name) : (token === "guest" ? "guest" : "anon"),
@@ -426,7 +420,7 @@ wss.on("connection", (ws, req) => {
     if (!historiales.has(conversationId)) {
       historiales.set(conversationId, crearHistorial());
     }
-
+    historialesLastAccess.set(conversationId, Date.now());
     return historiales.get(conversationId);
   }
 
@@ -1094,6 +1088,7 @@ Sintetiza la mejor respuesta definitiva ahora:`;
           const conversationId = obtenerConversationId(msg);
 
           historiales.set(conversationId, crearHistorial());
+          historialesLastAccess.delete(conversationId);
           finalizarProcesamiento(conversationId);
 
           send({
@@ -1105,6 +1100,12 @@ Sintetiza la mejor respuesta definitiva ahora:`;
         if (msg.type === "texto") {
           const conversationId = obtenerConversationId(msg);
           if (msg.conversationId) conversationIdActivo = conversationId;
+
+          // Rate limit: prevenir spam de mensajes
+          if (!checkRateLimit()) {
+            send({ type: "error", mensaje: "Estás enviando mensajes demasiado rápido. Esperá unos segundos.", conversationId });
+            return;
+          }
 
           if (estaProcesando(conversationId)) return;
 
@@ -1227,12 +1228,47 @@ server.on("error", (error) => {
   process.exit(1);
 });
 
+// --- Intervalos de limpieza de memoria y disco ---
+const CLEANUP_INTERVAL = 5 * 60 * 1000;      // cada 5 minutos
+const MAX_HISTORIAL_IDLE = 30 * 60 * 1000;   // 30 min sin acceso → liberar
+
+setInterval(() => {
+  const now = Date.now();
+  let liberados = 0;
+
+  // 1. Limpiar historiales inactivos de la RAM
+  for (const [id, lastAccess] of historialesLastAccess) {
+    if (now - lastAccess > MAX_HISTORIAL_IDLE) {
+      historialesGlobales.delete(id);
+      historialesLastAccess.delete(id);
+      liberados++;
+    }
+  }
+
+  // 2. Limpiar sesiones expiradas proactivamente
+  let sesionesLimpiadas = 0;
+  for (const [token, session] of sessions) {
+    if (now - session.createdAt > SESSION_DURATION) {
+      sessions.delete(token);
+      sesionesLimpiadas++;
+    }
+  }
+
+  if (liberados > 0 || sesionesLimpiadas > 0) {
+    console.log(`🧹 Limpieza: ${liberados} historiales, ${sesionesLimpiadas} sesiones liberadas. RAM: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+  }
+}, CLEANUP_INTERVAL);
+
+// Limpieza de caché de disco al iniciar y cada hora
+limpiarCacheDisco();
+setInterval(limpiarCacheDisco, 60 * 60 * 1000);
+
 server.listen(PORT, "0.0.0.0", async () => {
   console.log(`\n🚀 CHARVIS ONLINE`);
   console.log(`🌍 Puerto: ${PORT}`);
   console.log(`🔧 Modo: ${process.env.NODE_ENV || 'development'}`);
 
-  // Verificar clave de OpenAI al iniciar
+  // Verificar clave de Groq al iniciar
   await verificarClaveGroq();
 
   console.log(`\n✅ Servidor listo y funcionando!\n`);

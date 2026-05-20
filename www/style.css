@@ -483,11 +483,13 @@ textarea:focus-visible {
 .main {
     flex: 1;
     min-width: 0;
+    min-height: 0;
     height: 100%;
     display: flex;
     flex-direction: column;
     position: relative;
     z-index: 1;
+    overflow: hidden;
 }
 
 /* =========================
@@ -686,6 +688,8 @@ textarea:focus-visible {
 
 .chat-home {
     flex: 1;
+    min-height: 0;
+    height: 100%;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
@@ -1992,6 +1996,20 @@ body.welcome-active .composer {
 /* =========================
    LOGIN SCREEN
 ========================= */
+
+.login-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  background-color: var(--bg-1);
+  z-index: 1000;
+  transition: opacity 0.4s ease, visibility 0.4s ease;
+}
+
+.login-screen.fade-out {
+  opacity: 0;
+  visibility: hidden;
+}
 
 .login-screen {
     position: fixed;

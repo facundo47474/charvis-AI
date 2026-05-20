@@ -1,0 +1,52 @@
+[Imagen analizada: Captura de pantalla (82).png]
+Tipo: image/png
+Tamano aproximado: 0.16 MB
+
+**Análisis de la Imagen**
+
+**Objetos:**
+
+*   Una ventana de navegador con un curso en línea de la Universidad Tecnológica Nacional (UTN)
+*   Un menú lateral con opciones de navegación
+*   Un área de contenido principal con una pregunta de opción múltiple
+
+**Escena:**
+
+*   La imagen muestra una captura de pantalla de un curso en línea de la UTN, específicamente una pregunta de opción múltiple relacionada con teoría de conjuntos.
+
+**Texto Visible:**
+
+*   **Título de la Página:** Autoevaluación 2 (Obligatorio)
+*   **Página Actual:** Página principal del sitio
+*   **Menú Lateral:**
+    *   Área personal
+    *   Calendario
+    *   Archivos privados
+    *   Información Importante
+        *   Calendario Académico
+        *   Reglamento Ético y de Convivencia
+        *   Criterios de evaluación
+        *   Consultas
+    *   Mis materias
+    *   Buscar
+*   **Contenido Principal:**
+    *   **Pregunta:** Sea $B = \{x, y, z\}$. ¿Cuál es el conjunto de partes $\mathcal{P}(B)$?
+    *   **Opciones:**
+        *   a. $\{\emptyset, \{x\}, \{y\}, \{z\}, \{x,y\}, \{x,z\}, \{y,z\}, \{x,y,z\}\}$
+        *   b. $\{\emptyset, \{x,y\}, \{x,z\}, \{y,z\}, \{x,y,z\}\}$
+        *   c. $\{\emptyset, \{x\}, \{y\}, \{z\}, \{x,y,z\}\}$
+        *   d. $\{\{x\}, \{y\}, \{z\}, \{x,y\}, \{x,z\}, \{y,z\}, \{x,y,z\}\}$
+
+**Datos Útiles:**
+
+*   La pregunta se refiere al conjunto de partes de un conjunto dado $B = \{x, y, z\}$.
+*   El conjunto de partes $\mathcal{P}(B)$ incluye todos los subconjuntos posibles de $B$, incluyendo el conjunto vacío $\emptyset$ y el propio conjunto $B$.
+
+**Detalle Relevante:**
+
+*   El conjunto de partes de un conjunto con $n$ elementos tiene $2^n$ subconjuntos.
+*   En este caso, $B$ tiene 3 elementos, por lo que $\mathcal{P}(B)$ tendrá $2^3 = 8$ subconjuntos.
+
+**Respuesta Correcta:**
+
+La respuesta correcta es la opción **a.** $\{\emptyset, \{x\}, \{y\}, \{z\}, \{x,y\}, \{x,z\}, \{y,z\}, \{x,y,z\}\}$, ya que incluye todos los subconjuntos posibles de $B$, incluyendo el conjunto vacío y el propio conjunto $B$.

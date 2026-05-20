@@ -35,7 +35,32 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   await inicializarAuth();
   configurarTecladoMobile();
+  
+  // Desbloquear AudioContext en la primera interacción para evitar bloqueo del navegador
+  document.body.addEventListener("click", unlockAudioContext, { once: true });
+  document.body.addEventListener("keydown", unlockAudioContext, { once: true });
 });
+
+let audioUnlocked = false;
+function unlockAudioContext() {
+  if (audioUnlocked) return;
+  // Play silent speech
+  const msg = new SpeechSynthesisUtterance('');
+  msg.volume = 0;
+  window.speechSynthesis.speak(msg);
+  
+  // Play silent audio object
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const buffer = ctx.createBuffer(1, 1, 22050);
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(ctx.destination);
+  source.start(0);
+  ctx.resume();
+  
+  audioUnlocked = true;
+  console.log("AudioContext unlocked");
+}
 
 /* ========================= */
 /* AUTHENTICATION */
@@ -63,7 +88,8 @@ async function inicializarAuth() {
     }
   }
 
-  // Si no hay token válido, mostrar login y cargar config
+  // Si no hay token válido, mostrar login
+  loginScreen.classList.remove("fade-out");
   loginScreen.style.display = "flex";
   appContainer.style.display = "none";
 
@@ -148,8 +174,23 @@ async function handleGuestLogin() {
 
 function alCompletarLogin(user) {
   currentUser = user;
-  document.getElementById("login-screen").style.display = "none";
-  document.getElementById("app").style.display = "flex";
+  
+  // Transición suave del login a la app
+  const loginScreen = document.getElementById("login-screen");
+  const appContainer = document.getElementById("app");
+  
+  loginScreen.classList.add("fade-out");
+  setTimeout(() => {
+    loginScreen.style.display = "none";
+    appContainer.style.opacity = "0";
+    appContainer.style.display = "flex";
+    
+    // Fade in app
+    requestAnimationFrame(() => {
+      appContainer.style.transition = "opacity 0.5s ease";
+      appContainer.style.opacity = "1";
+    });
+  }, 400);
 
   const safeName = (user.email || user.name || "default").replace(/[^a-zA-Z0-9]/g, "_");
   STORAGE_KEY = `charvis_conversaciones_v2_${safeName}`;
@@ -218,6 +259,13 @@ function conectarWebSocket() {
 
     ws.onclose = () => {
       actualizarEstadoConexion(false);
+      
+      // Recuperar estado congelado si el socket se cierra de golpe
+      if (isGenerating) {
+        setGeneratingState(false);
+        ocultarTypingIndicator();
+        mostrarAvisoTemporal("Conexión perdida. Esperando reconexión...");
+      }
 
       setTimeout(() => {
         conectarWebSocket();
@@ -295,6 +343,7 @@ function manejarMensajeServidor(data) {
 
         textEl.setAttribute("data-raw", finalTexto);
         textEl.innerHTML = markdownToHtml(finalTexto);
+        renderizarMatematicas(textEl);
 
         // Guardar el mensaje final del asistente en memoria
         guardarMensajeEnConversacion({
@@ -378,6 +427,8 @@ function manejarMensajeServidor(data) {
         const textEl = messageEl.querySelector(".msg-text");
         const finalTexto = textEl ? (textEl.getAttribute("data-raw") || "") : "";
         if (finalTexto) {
+          textEl.innerHTML = markdownToHtml(finalTexto);
+          renderizarMatematicas(textEl);
           guardarMensajeEnConversacion({
             tipo: "mensaje",
             rol: "charvis",
@@ -413,6 +464,7 @@ function manejarDeltaStreaming(texto) {
   const newText = currentText + texto;
   textEl.setAttribute("data-raw", newText);
   textEl.innerHTML = markdownToHtml(newText);
+  renderizarMatematicas(textEl);
 
   // Auto scroll
   const chat = document.getElementById("chat");
@@ -424,7 +476,10 @@ function mostrarTypingIndicator() {
   const chat = document.getElementById("chat");
   if (!chat) return;
 
-  ocultarTypingIndicator(); // Evitar duplicados
+  // Si ya existe, no hacemos nada para evitar parpadeos y saltos en la interfaz
+  if (document.getElementById("charvis-typing-indicator")) {
+    return;
+  }
 
   const wrapper = document.createElement("div");
   wrapper.id = "charvis-typing-indicator";
@@ -779,7 +834,47 @@ function guardarConversaciones() {
     totalUsage: totalUsageGlobal
   };
 
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    // QuotaExceededError: localStorage lleno (~5MB)
+    if (e.name === "QuotaExceededError" || e.code === 22 || e.code === 1014) {
+      console.warn("⚠️ localStorage lleno. Podando conversaciones antiguas...");
+      podarConversacionesAntiguas();
+      try {
+        const dataPodada = {
+          conversationCount,
+          activeConversationId,
+          conversaciones,
+          totalUsage: totalUsageGlobal
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(dataPodada));
+      } catch (e2) {
+        console.error("❌ No se pudo guardar ni después de podar:", e2);
+        mostrarAvisoTemporal("⚠️ Almacenamiento lleno. Borrá conversaciones antiguas para liberar espacio.");
+      }
+    } else {
+      console.error("Error guardando en localStorage:", e);
+    }
+  }
+}
+
+function podarConversacionesAntiguas() {
+  // 1. Recortar mensajes en todas las conversaciones
+  conversaciones.forEach(c => {
+    if (c.mensajes.length > 15) {
+      c.mensajes = c.mensajes.slice(-15);
+    }
+  });
+
+  // 2. Si aún hay más de 5 conversaciones, eliminar las más antiguas (excepto la activa)
+  if (conversaciones.length > 5) {
+    const activa = conversaciones.find(c => c.id === activeConversationId);
+    const otras = conversaciones.filter(c => c.id !== activeConversationId);
+    const recientes = otras.slice(-4);
+    conversaciones = activa ? [activa, ...recientes] : recientes;
+    mostrarAvisoTemporal("Se eliminaron conversaciones antiguas para liberar espacio.");
+  }
 }
 
 function cargarConversaciones() {
@@ -1269,6 +1364,12 @@ function toggleModoRazonamiento() {
 }
 
 function setMode(mode) {
+  // Bloquear modos avanzados para invitados
+  if (currentUser && currentUser.isGuest && mode !== "normal") {
+    mostrarAvisoTemporal("Los modos avanzados solo están disponibles para usuarios registrados.");
+    return;
+  }
+
   currentMode = mode;
   modoRazonamientoActivo = (mode === "razonamiento" || mode === "pro"); // Keep backwards compatibility
 
@@ -1423,6 +1524,7 @@ function agregarMensaje(rol, texto, adjuntos = [], isStreaming = false) {
 
   if (rolNorm === "charvis") {
     text.innerHTML = markdownToHtml(texto || "");
+    renderizarMatematicas(text);
   } else {
     text.textContent = texto || "";
   }
@@ -1484,12 +1586,7 @@ function agregarMensaje(rol, texto, adjuntos = [], isStreaming = false) {
     message.scrollIntoView({ behavior: "smooth", block: "end" });
   });
 
-  guardarMensajeEnConversacion({
-    tipo: "mensaje",
-    rol: normalizarRol(rol),
-    texto,
-    adjuntos: adjuntos
-  });
+
 }
 
 function agregarError(texto) {
@@ -1854,6 +1951,24 @@ function markdownToHtml(text) {
     .replace(/&lt;(\/?(?:strong|b|em|i|br|p|ul|li|h[1-6]))\s*&gt;/gi, "<$1>");
   if (!html.startsWith("<")) html = "<p>" + html + "</p>";
   return html;
+}
+
+function renderizarMatematicas(elemento) {
+  if (window.renderMathInElement) {
+    try {
+      window.renderMathInElement(elemento, {
+        delimiters: [
+          {left: "$$", right: "$$", display: true},
+          {left: "$", right: "$", display: false},
+          {left: "\\(", right: "\\)", display: false},
+          {left: "\\[", right: "\\]", display: true}
+        ],
+        throwOnError: false
+      });
+    } catch (e) {
+      console.warn("KaTeX error:", e);
+    }
+  }
 }
 
 /* ========================= */
