@@ -2352,13 +2352,19 @@ body.welcome-active .composer {
     .chat-home.is-welcome {
         padding: 40px 16px;
         transform: none;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
     }
 
     .chat-home h1 {
         font-size: 32px;
         margin-bottom: 24px;
         text-align: center;
+        display: flex;
         flex-direction: column;
+        align-items: center;
+        justify-content: center;
         gap: 8px;
     }
 
@@ -2410,11 +2416,9 @@ body.welcome-active .composer {
 
     .suggestions {
         width: 100%;
-        justify-content: flex-start;
-        overflow-x: auto;
+        justify-content: center;
         padding: 4px 0 10px;
-        flex-wrap: nowrap;
-        scrollbar-width: none;
+        flex-wrap: wrap;
         gap: 8px;
     }
 
