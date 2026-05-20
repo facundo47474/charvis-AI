@@ -1227,6 +1227,17 @@ body.welcome-active .composer {
     transition: box-shadow 0.2s ease;
 }
 
+/* Resetear white-space para elementos de bloque dentro del bubble */
+.msg-text details,
+.msg-text ul,
+.msg-text ol,
+.msg-text pre,
+.msg-text h1,
+.msg-text h2,
+.msg-text h3 {
+    white-space: normal;
+}
+
 /* Fase 3.1 — Burbujas del usuario con gradiente sutil */
 .message.usuario .msg-text {
     background: linear-gradient(135deg, #ffffff 0%, #f0eaff 100%);
@@ -2288,6 +2299,10 @@ body.welcome-active .composer {
     margin-bottom: 16px;
     font-size: 0.9em;
     color: var(--text-soft);
+    white-space: normal;       /* evitar herencia de pre-wrap */
+    display: block;            /* forzar bloque en todos los navegadores */
+    width: 100%;               /* ocupar todo el ancho disponible */
+    box-sizing: border-box;
 }
 
 .charvis-thought-process summary {
@@ -2298,6 +2313,10 @@ body.welcome-active .composer {
     outline: none;
     display: flex;
     align-items: center;
+    list-style: none;          /* quitar marcador nativo en Safari */
+    -webkit-tap-highlight-color: transparent; /* quitar highlight táctil */
+    padding: 4px 0;            /* área táctil más grande en mobile */
+    min-height: 36px;          /* facilitar tap en mobile */
 }
 
 .charvis-thought-process summary::-webkit-details-marker {
@@ -2305,11 +2324,12 @@ body.welcome-active .composer {
 }
 
 .charvis-thought-process summary::before {
-    content: '▶';
+    content: '\25B6';          /* ▶ en unicode escapado para máxima compatibilidad */
     display: inline-block;
     margin-right: 8px;
     font-size: 0.8em;
     transition: transform 0.2s ease;
+    flex-shrink: 0;
 }
 
 .charvis-thought-process[open] summary::before {
@@ -2321,6 +2341,8 @@ body.welcome-active .composer {
     padding-top: 10px;
     border-top: 1px solid rgba(255, 255, 255, 0.05);
     line-height: 1.5;
+    white-space: pre-wrap;     /* restaurar para el contenido de texto */
+    overflow-x: auto;          /* scroll horizontal si el contenido es largo */
 }
 
 /* Ocultar descripción de Charvis en móviles estrictamente */
