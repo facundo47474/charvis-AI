@@ -21,7 +21,8 @@ const crypto = require("crypto");
 const Groq = require("groq-sdk");
 
 const { buildSystemPrompt } = require("./lib/ai/prompts");
-const { getUserCredits, hasEnoughCredits, consumeCredits } = require("./lib/credits");
+const usageService = require("./lib/usage.service");
+const { hasEnoughCredits, incrementUsage, getLimit } = usageService;
 const { estimateTokens, buildModelContext, MAX_INPUT_CHARS, MAX_OUTPUT_TOKENS } = require("./lib/ai/tokens");
 
 const { recortarHistorial } = require("./historial");
@@ -142,6 +143,16 @@ app.get("/api/health", (_req, res) => {
 
 app.get("/api/ping", (_req, res) => {
   res.status(200).send("pong");
+});
+
+app.get("/api/usage", (req, res) => {
+  const token = (req.headers.authorization || "").replace("Bearer ", "");
+  const session = verificarSesion(token);
+  const isGuest = !session;
+  const userId = session ? (session.email || session.name) : "guest";
+  const limit = usageService.getLimit(isGuest);
+  const usage = usageService.getUsage(userId);
+  res.json({ usage, limit });
 });
 
 
@@ -544,7 +555,8 @@ ${respuestaFinal}`;
       guardarHistorial(conversationId, historial);
 
       // Descontar créditos
-      consumeCredits(opciones.userId || "anon", 1, opciones.isGuest);
+      const newUsage = incrementUsage(opciones.userId || "anon", 1);
+      send({ type: "usage_update", usage: newUsage, limit: getLimit(opciones.isGuest), conversationId });
 
     } catch (error) {
       if (error.name === 'AbortError') {
@@ -614,7 +626,8 @@ ${respuestaFinal}`;
       guardarHistorial(conversationId, historial);
 
       // Consumir créditos (el modo PRO cuesta más)
-      consumeCredits(opciones.userId || "anon", 4, opciones.isGuest);
+      const newUsage = incrementUsage(opciones.userId || "anon", 4);
+      send({ type: "usage_update", usage: newUsage, limit: getLimit(opciones.isGuest), conversationId });
 
     } catch (error) {
       if (error.name === 'AbortError') {
@@ -1005,7 +1018,8 @@ Sintetiza la mejor respuesta definitiva ahora:`;
 
       // Descontar créditos (1 por mensaje en beta)
       const userId = opciones.userId || "anon";
-      consumeCredits(userId, 1, opciones.isGuest);
+      const newUsage = incrementUsage(userId, 1);
+      send({ type: "usage_update", usage: newUsage, limit: getLimit(opciones.isGuest), conversationId });
 
     } catch (err) {
       if (err.name === 'AbortError') {

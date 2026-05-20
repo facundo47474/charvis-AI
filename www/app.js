@@ -214,9 +214,11 @@ function alCompletarLogin(user) {
   iniciarConversaciones();
   conectarWebSocket();
   if (user.isGuest) {
-    mostrarAvisoTemporal("Modo invitado: Algunas funciones están limitadas.");
+    mostrarAvisoTemporal("Modo invitado: 100 usos disponibles. Registrate para obtener 300.");
   }
   renderizarConversacion(obtenerConversacionActiva());
+  // Cargar uso real desde el servidor
+  cargarUsageDesdeServidor();
 }
 
 async function cerrarSesion() {
@@ -438,6 +440,12 @@ function manejarMensajeServidor(data) {
       }
       currentAssistantMessageId = null;
     }
+    return;
+  }
+
+  // Actualizar barra de uso en tiempo real desde el servidor
+  if (msg.type === "usage_update") {
+    actualizarLimitesUso(msg.usage, msg.limit);
     return;
   }
 }
@@ -759,14 +767,36 @@ function actualizarSidebarConversaciones() {
   actualizarLimitesUso();
 }
 
-function actualizarLimitesUso() {
-  const maxLimit = 300;
+async function cargarUsageDesdeServidor() {
+  try {
+    const headers = authToken ? { "Authorization": `Bearer ${authToken}` } : {};
+    const res = await fetch("/api/usage", { headers });
+    if (!res.ok) return;
+    const data = await res.json();
+    // data: { usage, limit }
+    totalUsageGlobal = data.usage;
+    actualizarLimitesUso(data.usage, data.limit);
+  } catch (e) {
+    console.warn("[Usage] No se pudo cargar el uso desde el servidor:", e.message);
+  }
+}
 
-  if (totalUsageGlobal === -1) {
-    totalUsageGlobal = 0;
-    conversaciones.forEach(c => {
-      totalUsageGlobal += c.mensajes.filter(m => esRolUsuario(m.rol)).length;
-    });
+function actualizarLimitesUso(usage, limit) {
+  const isGuest = currentUser && currentUser.isGuest;
+
+  // Si no se pasan parámetros del servidor, usar local (fallback)
+  if (usage === undefined) {
+    const maxLimit = isGuest ? 100 : 300;
+    if (totalUsageGlobal === -1) {
+      totalUsageGlobal = 0;
+      conversaciones.forEach(c => {
+        totalUsageGlobal += c.mensajes.filter(m => esRolUsuario(m.rol)).length;
+      });
+    }
+    usage = totalUsageGlobal;
+    limit = maxLimit;
+  } else {
+    totalUsageGlobal = usage;
   }
 
   const barFill = document.getElementById("usage-bar-fill");
@@ -774,9 +804,8 @@ function actualizarLimitesUso() {
 
   if (!barFill || !countText) return;
 
-  const percentage = Math.min((totalUsageGlobal / maxLimit) * 100, 100);
-
-  countText.textContent = `${totalUsageGlobal} / ${maxLimit}`;
+  const percentage = Math.min((usage / limit) * 100, 100);
+  countText.textContent = `${usage} / ${limit}`;
 
   setTimeout(() => {
     barFill.style.width = `${percentage}%`;
