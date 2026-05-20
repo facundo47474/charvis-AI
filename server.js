@@ -144,7 +144,7 @@ app.get("/api/ping", (_req, res) => {
   res.status(200).send("pong");
 });
 
-const cookieParser = require("cookie-parser");
+
 const authController = require("./lib/controllers/auth.controller");
 const startKeepAlive = require("./lib/keepAlive");
 app.use("/api/auth", authController(sessions, { GOOGLE_CLIENT_ID, APP_PASSWORD, APP_USER }, { generarToken, verificarSesion }));
